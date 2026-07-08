@@ -10,6 +10,7 @@
  * operates on this IR alone. */
 #include "../simd_attr.h"
 #include "../source_location.h"
+#include "mtlc/type.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -333,6 +334,12 @@ typedef struct {
    * the backend IR carries no frontend AST dependency.
    * MTLC-PHASE2: retire this once codegen reads a baked-in MtlcType instead. */
   void *ast_ref;
+  /* Backend-owned result/subject type of this instruction, baked at lowering so
+   * the code generators never re-derive it from the frontend AST/TypeChecker.
+   * For IR_OP_BINARY it is the expression's inferred result type; for IR_OP_CAST
+   * the target type; for IR_OP_DECLARE_LOCAL the local's type. NULL when not
+   * applicable or synthesized by the optimizer. */
+  MtlcType *value_type;
 } IRInstruction;
 
 typedef struct {
@@ -383,6 +390,44 @@ typedef struct {
   char *type_name;
 } IRDebugLocalEntry;
 
+/* One named-type entry in the module type registry (backend-owned). Populated at
+ * lowering; lets codegen resolve a type-name string (from an instruction's text
+ * or a function's parameter_types) to an MtlcType without the frontend
+ * TypeChecker's get_type_by_name. */
+typedef struct {
+  char *name;      /* owned */
+  MtlcType *type;  /* borrowed (frontend adapter's process-lifetime arena) */
+} IRTypeEntry;
+
+typedef enum {
+  IR_MODSYM_FUNCTION,
+  IR_MODSYM_VARIABLE,
+  IR_MODSYM_CONSTANT
+} IRModuleSymbolKind;
+
+/* One module-level symbol (global var, function, or folded constant) the code
+ * generators emit or reference. Populated at lowering from the frontend symbol
+ * table + AST so codegen needs neither. All MtlcType* are borrowed; strings are
+ * owned. */
+typedef struct {
+  char *name;               /* owned */
+  MtlcType *type;           /* borrowed; the symbol's type */
+  IRModuleSymbolKind kind;
+  int is_extern;
+  int has_body;             /* functions: defined (has an IR body) vs declared */
+  char *link_name;          /* owned; object-file linkage name, or NULL = name */
+  long long const_value;    /* IR_MODSYM_CONSTANT: folded integer value */
+  /* Global-variable initializer, evaluated to a constant at lowering. */
+  int has_initializer;
+  int init_is_float;
+  long long init_bits;      /* numeric initializer (float carries bit pattern) */
+  char *init_string;        /* owned; string-literal initializer bytes, or NULL */
+  /* Function signature (IR_MODSYM_FUNCTION), for call ABI classification. */
+  MtlcType *return_type;    /* borrowed */
+  MtlcType **param_types;   /* owned array of borrowed ptrs, or NULL */
+  size_t param_count;
+} IRModuleSymbol;
+
 typedef struct {
   IRFunction **functions;
   size_t function_count;
@@ -393,10 +438,22 @@ typedef struct {
   IRDebugLocalEntry *debug_local_entries;
   size_t debug_local_entry_count;
   size_t debug_local_entry_capacity;
+  /* Backend-owned type registry (name -> MtlcType), populated at lowering.
+   * Replaces the frontend TypeChecker's get_type_by_name for the backend. */
+  IRTypeEntry *type_registry;
+  size_t type_registry_count;
+  size_t type_registry_capacity;
+  /* Backend-owned module symbol table (globals/functions/externs + folded
+   * constants), populated at lowering. Replaces codegen's frontend SymbolTable
+   * lookups and its walk of the AST declaration list. */
+  IRModuleSymbol *module_symbols;
+  size_t module_symbol_count;
+  size_t module_symbol_capacity;
+  /* Whether main() takes (argc, argv), baked from the main function signature. */
+  int main_wants_argc_argv;
   /* Set once ir_program_eliminate_dead_functions has run. The binary backend
-   * walks AST function declarations and treats a missing IR body as an
-   * internal error; this flag tells it a missing body means "eliminated as
-   * unreachable", which is expected, not a lowering bug. */
+   * treats a missing IR body as an internal error; this flag tells it a missing
+   * body means "eliminated as unreachable", which is expected, not a bug. */
   int dead_functions_eliminated;
 } IRProgram;
 
@@ -431,6 +488,21 @@ const IRBasicBlock *ir_function_blocks(IRFunction *function,
 IRProgram *ir_program_create(void);
 void ir_program_destroy(IRProgram *program);
 int ir_program_add_function(IRProgram *program, IRFunction *function);
+
+/* Module type registry. register copies `name`; `type` is borrowed (owned by the
+ * caller's arena) and must outlive the program. Re-registering a name updates it.
+ * lookup returns NULL when absent. */
+int ir_program_register_type(IRProgram *program, const char *name,
+                             MtlcType *type);
+MtlcType *ir_program_lookup_type(const IRProgram *program, const char *name);
+
+/* Module symbol table. add copies the proto (deep-copying owned strings and the
+ * param_types array; MtlcType* stay borrowed) and returns the stored entry, or
+ * NULL on OOM. lookup returns NULL when absent. */
+IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
+                                      const IRModuleSymbol *proto);
+const IRModuleSymbol *ir_program_lookup_symbol(const IRProgram *program,
+                                               const char *name);
 
 /* ir_lower_program and ir_lowering_set_explain are the AST->IR lowering entry
  * points. They reference frontend types (ASTNode/TypeChecker/SymbolTable) and so

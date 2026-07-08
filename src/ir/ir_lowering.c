@@ -1,5 +1,6 @@
 // AST->IR lowering: driver, context lifecycle, emit primitives.
 #include "ir_lowering_internal.h"
+#include "frontend/mtlc_lower_module.h" // backend module table population
 
 static void ir_lowering_free_control_stack(IRLoweringContext *context) {
   for (size_t j = 0; j < context->control_count; j++) {
@@ -101,7 +102,12 @@ IRProgram *ir_lower_program(ASTNode *program, TypeChecker *type_checker,
     } else {
       free(context.error_message);
     }
+    return ir_program;
   }
+
+  /* Bake the backend-owned type registry + module symbol table so the code
+   * generators no longer consult the frontend TypeChecker/SymbolTable/AST. */
+  mtlc_lower_populate_module(ir_program, program, type_checker, symbol_table);
 
   return ir_program;
 }

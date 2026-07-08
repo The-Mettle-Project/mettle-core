@@ -1,5 +1,6 @@
 // AST->IR lowering: expression and call lowering.
 #include "ir_lowering_internal.h"
+#include "frontend/mtlc_frontend.h" // mtlc_type_from_frontend (value_type baking)
 
 int ir_lower_statement_or_expression(IRLoweringContext *context,
                                             IRFunction *function,
@@ -485,6 +486,11 @@ int ir_lower_expression(IRLoweringContext *context, IRFunction *function,
         instruction.rhs = right;
         instruction.text = binary->operator;
         instruction.ast_ref = expression;
+        /* Bake the result type onto the IR so codegen reads it instead of
+         * re-inferring from the AST (replaces code_generator_infer_expression_type;
+         * mirrors its primary path). */
+        instruction.value_type = mtlc_type_from_frontend(
+            type_checker_infer_type(context->type_checker, expression));
         /* String '+' becomes a heap-allocating concat kernel in codegen; mark
          * it so the `@noalloc` contract checker can see the allocation. */
         instruction.allocates = 1;

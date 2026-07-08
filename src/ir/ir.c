@@ -352,6 +352,7 @@ int ir_function_insert_instruction(IRFunction *function, size_t index,
   slot->is_float = instruction->is_float;
   slot->float_bits = instruction->float_bits;
   slot->ast_ref = instruction->ast_ref;
+  slot->value_type = instruction->value_type;
   slot->dest = ir_operand_clone(&instruction->dest);
   slot->lhs = ir_operand_clone(&instruction->lhs);
   slot->rhs = ir_operand_clone(&instruction->rhs);
@@ -630,6 +631,13 @@ IRProgram *ir_program_create(void) {
   program->debug_local_entries = NULL;
   program->debug_local_entry_count = 0;
   program->debug_local_entry_capacity = 0;
+  program->type_registry = NULL;
+  program->type_registry_count = 0;
+  program->type_registry_capacity = 0;
+  program->module_symbols = NULL;
+  program->module_symbol_count = 0;
+  program->module_symbol_capacity = 0;
+  program->main_wants_argc_argv = 0;
   program->dead_functions_eliminated = 0;
   return program;
 }
@@ -659,7 +667,121 @@ void ir_program_destroy(IRProgram *program) {
     }
     free(program->debug_local_entries);
   }
+  if (program->type_registry) {
+    for (size_t i = 0; i < program->type_registry_count; i++) {
+      free(program->type_registry[i].name);
+    }
+    free(program->type_registry);
+  }
+  if (program->module_symbols) {
+    for (size_t i = 0; i < program->module_symbol_count; i++) {
+      free(program->module_symbols[i].name);
+      free(program->module_symbols[i].link_name);
+      free(program->module_symbols[i].init_string);
+      free(program->module_symbols[i].param_types);
+    }
+    free(program->module_symbols);
+  }
   free(program);
+}
+
+int ir_program_register_type(IRProgram *program, const char *name,
+                             MtlcType *type) {
+  if (!program || !name) {
+    return 0;
+  }
+  for (size_t i = 0; i < program->type_registry_count; i++) {
+    if (strcmp(program->type_registry[i].name, name) == 0) {
+      program->type_registry[i].type = type; /* update in place */
+      return 1;
+    }
+  }
+  if (program->type_registry_count == program->type_registry_capacity) {
+    size_t next = program->type_registry_capacity
+                      ? program->type_registry_capacity * 2
+                      : 32;
+    IRTypeEntry *grown =
+        realloc(program->type_registry, next * sizeof(IRTypeEntry));
+    if (!grown) {
+      return 0;
+    }
+    program->type_registry = grown;
+    program->type_registry_capacity = next;
+  }
+  IRTypeEntry *entry = &program->type_registry[program->type_registry_count];
+  entry->name = mettle_strdup(name);
+  if (!entry->name) {
+    return 0;
+  }
+  entry->type = type;
+  program->type_registry_count++;
+  return 1;
+}
+
+MtlcType *ir_program_lookup_type(const IRProgram *program, const char *name) {
+  if (!program || !name) {
+    return NULL;
+  }
+  for (size_t i = 0; i < program->type_registry_count; i++) {
+    if (strcmp(program->type_registry[i].name, name) == 0) {
+      return program->type_registry[i].type;
+    }
+  }
+  return NULL;
+}
+
+IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
+                                      const IRModuleSymbol *proto) {
+  if (!program || !proto || !proto->name) {
+    return NULL;
+  }
+  if (program->module_symbol_count == program->module_symbol_capacity) {
+    size_t next = program->module_symbol_capacity
+                      ? program->module_symbol_capacity * 2
+                      : 32;
+    IRModuleSymbol *grown =
+        realloc(program->module_symbols, next * sizeof(IRModuleSymbol));
+    if (!grown) {
+      return NULL;
+    }
+    program->module_symbols = grown;
+    program->module_symbol_capacity = next;
+  }
+  IRModuleSymbol *dst = &program->module_symbols[program->module_symbol_count];
+  *dst = *proto; /* shallow copy scalars + borrowed MtlcType* */
+  dst->name = mettle_strdup(proto->name);
+  dst->link_name = proto->link_name ? mettle_strdup(proto->link_name) : NULL;
+  dst->init_string = proto->init_string ? mettle_strdup(proto->init_string) : NULL;
+  dst->param_types = NULL;
+  if (proto->param_count > 0 && proto->param_types) {
+    dst->param_types = malloc(proto->param_count * sizeof(MtlcType *));
+    if (!dst->param_types) {
+      free(dst->name);
+      free(dst->link_name);
+      free(dst->init_string);
+      return NULL;
+    }
+    memcpy(dst->param_types, proto->param_types,
+           proto->param_count * sizeof(MtlcType *));
+  }
+  if (!dst->name) {
+    return NULL;
+  }
+  program->module_symbol_count++;
+  return dst;
+}
+
+const IRModuleSymbol *ir_program_lookup_symbol(const IRProgram *program,
+                                               const char *name) {
+  if (!program || !name) {
+    return NULL;
+  }
+  for (size_t i = 0; i < program->module_symbol_count; i++) {
+    if (strcmp(program->module_symbols[i].name, name) == 0) {
+      return &program->module_symbols[i];
+    }
+  }
+  return NULL;
 }
 
 int ir_program_add_function(IRProgram *program, IRFunction *function) {
