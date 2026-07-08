@@ -1,0 +1,7 @@
+fn callee() -> int32 {
+  return 5;
+}
+
+fn main() -> int32 {
+  return callee();
+}

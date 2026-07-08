@@ -1,0 +1,6 @@
+extern fn print_c(msg: cstring) -> int32 = "puts";
+
+fn main() -> int32 {
+  var msg: cstring = 0;
+  return print_c(msg);
+}

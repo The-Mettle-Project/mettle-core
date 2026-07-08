@@ -1,0 +1,8 @@
+// ABI: function prologue — push rbp, mov rbp, rsp, sub rsp
+fn do_nothing() -> int32 {
+  return 0;
+}
+
+fn main() -> int32 {
+  return do_nothing();
+}

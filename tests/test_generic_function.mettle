@@ -1,0 +1,8 @@
+fn add_values<T>(a: T, b: T) -> T {
+    return a + b;
+}
+
+fn main() -> int32 {
+    var result: int32 = add_values<int32>(10, 20);
+    return result;
+}

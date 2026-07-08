@@ -1,0 +1,7 @@
+fn main() -> int32 {
+  switch (1) {
+    case 1:
+      continue;
+  }
+  return 0;
+}

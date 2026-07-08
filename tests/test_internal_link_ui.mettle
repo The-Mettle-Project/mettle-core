@@ -1,0 +1,88 @@
+import "std/ui";
+
+fn noop_window_proc(hwnd: int64, msg: uint32, wparam: int64, lparam: int64) -> int64 {
+  if (msg == UI_WM_DESTROY()) {
+    ui_quit(0);
+    return 0;
+  }
+  return ui_def_window_proc(hwnd, msg, wparam, lparam);
+}
+
+fn main() -> int32 {
+  if (ui_init() == 0) {
+    return 1;
+  }
+
+  var rgb: uint32 = ui_rgb(10, 20, 30);
+  if (rgb != 0x001E140A) {
+    return 2;
+  }
+
+  var rect: UiRect = ui_make_rect(0, 0, 100, 50);
+  if (ui_rect_width(rect) != 100) {
+    return 3;
+  }
+  if (ui_rect_height(rect) != 50) {
+    return 4;
+  }
+
+  if (ui_command_id(0x00001234) != 0x1234) {
+    return 5;
+  }
+  if (ui_command_notify(0x00001234) != 0) {
+    return 6;
+  }
+
+  if (ui_color_r(rgb) != 10) {
+    return 7;
+  }
+  if (ui_color_g(rgb) != 20) {
+    return 8;
+  }
+  if (ui_color_b(rgb) != 30) {
+    return 9;
+  }
+
+  var padded: UiRect = ui_rect_inset(rect, ui_make_insets(10));
+  if (ui_rect_width(padded) != 80) {
+    return 10;
+  }
+  if (ui_rect_height(padded) != 30) {
+    return 11;
+  }
+  if (ui_rect_contains(padded, 10, 10) != 1) {
+    return 12;
+  }
+  if (ui_rect_contains(padded, 5, 10) != 0) {
+    return 13;
+  }
+
+  var layout: UiLayoutCursor = ui_stack_vertical(8, 12, 120, 24, 6);
+  var row1: UiRect = ui_stack_next(&layout);
+  var row2: UiRect = ui_stack_next(&layout);
+  if (row1.top != 12) {
+    return 14;
+  }
+  if (row2.top != 42) {
+    return 15;
+  }
+
+  var grid: UiRect = ui_rect_xywh(0, 0, 310, 40);
+  var col: UiRect = ui_column_rect(&grid, 1, 3, 5);
+  if (col.left != 105) {
+    return 16;
+  }
+  if (ui_rect_width(col) != 100) {
+    return 17;
+  }
+
+  var row: UiRect = ui_row_rect(&grid, 2, 11, 4);
+  if (row.top != 30) {
+    return 18;
+  }
+  if (ui_rect_height(row) != 11) {
+    return 19;
+  }
+
+  return 0;
+}

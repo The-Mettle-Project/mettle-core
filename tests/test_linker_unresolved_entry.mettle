@@ -1,0 +1,5 @@
+extern fn missing_symbol() -> int32 = "missing_symbol";
+
+fn mainCRTStartup() -> int32 {
+  return missing_symbol();
+}

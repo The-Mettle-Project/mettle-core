@@ -1,0 +1,3 @@
+defer foo();
+
+fn foo() {}

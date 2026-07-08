@@ -1,0 +1,93 @@
+// Mettle Word Count benchmark
+//
+// Parses a raw byte buffer to count words (non-empty runs of non-whitespace).
+// Exercises: malloc, buffer iteration, byte classification, branching.
+//
+// Build: build.bat
+// Run: word_count.exe
+
+import "std/io";
+import "std/mem";
+import "std/bench";
+
+// Count words in buf[0..len-1]. Word = non-empty sequence of non-whitespace bytes.
+fn word_count(buf: cstring, len: int64) -> int64 {
+  var count: int64 = 0;
+  var i: int64 = 0;
+  var in_word: int32 = 0;
+  while (i < len) {
+    var c: uint8 = (uint8)buf[i];
+    if (c == 32 || c == 9 || c == 10 || c == 13) {
+      in_word = 0;
+    } else {
+      if (in_word == 0) {
+        count = count + 1;
+      }
+      in_word = 1;
+    }
+    i = i + 1;
+  }
+  return count;
+}
+
+fn main() -> int32 {
+  var buf_size: int64 = 262144;
+  var template: string = "a b ";
+  var template_len: int64 = 4;
+
+  var buf: cstring = malloc(buf_size);
+  if (buf == 0) {
+    println(cstr("malloc failed"));
+    return 1;
+  }
+
+  var pos: int64 = 0;
+  while (pos < buf_size) {
+    var chunk: int64 = template_len;
+    if (pos + chunk > buf_size) {
+      chunk = buf_size - pos;
+    }
+    memcpy(buf + pos, cstr(template), chunk);
+    pos = pos + chunk;
+  }
+
+  var wc: int64 = word_count(buf, buf_size);
+
+  var passes: int32 = 200;
+  var t0: uint64 = bench_time_us();
+  var total: int64 = 0;
+  var p: int32 = 0;
+  while (p < passes) {
+    total = total + word_count(buf, buf_size);
+    p = p + 1;
+  }
+  var elapsed_us: uint64 = bench_time_us() - t0;
+
+  var header: string = "Word count: 256 KB buffer (a b pattern)";
+  println(cstr(header));
+
+  var result_str: string = "Words = ";
+  print(cstr(result_str));
+  println_int(wc);
+
+  var bench_header: string = "Benchmark: 200 passes (word_count)";
+  println(cstr(bench_header));
+
+  var sum_str: string = "Total words = ";
+  print(cstr(sum_str));
+  println_int(total);
+
+  var time_str: string = "Time: ";
+  print(cstr(time_str));
+  print_int(elapsed_us);
+  println(cstr(" us"));
+
+  var per_pass: uint64 = elapsed_us / passes;
+  var us_str: string = "Per pass: ~";
+  print(cstr(us_str));
+  print_int(per_pass);
+  println(cstr(" us"));
+
+  free(buf);
+  return 0;
+}

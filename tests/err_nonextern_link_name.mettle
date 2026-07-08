@@ -1,0 +1,5 @@
+fn local_alias() -> int32 = "puts";
+
+fn main() -> int32 {
+  return 0;
+}

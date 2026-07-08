@@ -1,0 +1,15 @@
+fn leaf_crash() -> int32 {
+  asm {
+    mov rax, 1
+    mov qword [rax], 42
+  }
+  return 0
+}
+
+fn intermediate() -> int32 {
+  return leaf_crash()
+}
+
+fn main() -> int32 {
+  return intermediate()
+}

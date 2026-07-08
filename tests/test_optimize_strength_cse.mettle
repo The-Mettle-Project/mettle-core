@@ -1,0 +1,17 @@
+@noinline fn compute(a: int32, b: int32) -> int32 {
+  var x: int32 = a * 8;
+  var y: int32 = 8 * a;
+
+  var z: int32 = a + b;
+  var w: int32 = b + a;
+
+  if (z != w) {
+    return 1;
+  }
+
+  return x + y;
+}
+
+fn main() -> int32 {
+  return compute(7, 9);
+}

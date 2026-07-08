@@ -1,0 +1,17 @@
+trait Incrementable {
+    fn next_value(self: Self) -> Self;
+}
+
+impl Incrementable for int32 {
+    fn next_value(self: Self) -> Self {
+        return self + 1;
+    }
+}
+
+fn bump<T: Incrementable>(value: T) -> T {
+    return value.next_value();
+}
+
+fn main() -> int32 {
+    return bump<int32>(41);
+}

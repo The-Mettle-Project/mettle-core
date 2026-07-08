@@ -1,0 +1,3 @@
+fn duplicate_symbol() -> int32 {
+  return 1;
+}

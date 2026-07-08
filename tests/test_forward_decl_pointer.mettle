@@ -1,0 +1,12 @@
+fn set_value(p: int32*) -> int32;
+
+fn set_value(p: int32*) -> int32 {
+  *p = 11;
+  return *p;
+}
+
+fn main() -> int32 {
+  var x: int32 = 3;
+  var p: int32* = &x;
+  return set_value(p);
+}

@@ -1,0 +1,5 @@
+import "nonexistent/module/path";
+
+fn main() -> int32 {
+  return 0;
+}

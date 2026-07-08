@@ -1,0 +1,584 @@
+{
+  "version": 2,
+  "mode": "mettle-vs-c",
+  "outputs": {
+    "primary": "docs/benchmarks/latest.json",
+    "mirror_web": "web/benchmarks.json",
+    "report_html": "docs/benchmarks/latest.html"
+  },
+  "defaults": {
+    "c_flags": [
+      "-O3",
+      "-lkernel32"
+    ],
+    "mettle_flags": [
+      "--build",
+      "--emit-obj",
+      "--linker",
+      "internal",
+      "--release"
+    ],
+    "runs": 5,
+    "warmup": 1,
+    "passes": 200
+  },
+  "benchmarks": [
+    {
+      "name": "fib",
+      "kind": "runtime",
+      "suite": 1,
+      "description": "Fibonacci fib(35) x 10M (Mettle unrolled hot loop)",
+      "mettle_source": "examples/fib/fib.mettle",
+      "mettle_exe": "examples/fib/fib.exe",
+      "c_source": "examples/fib/fib.c",
+      "c_exe": "examples/fib/fib_c.exe",
+      "rust_source": "examples/fib/fib.rs",
+      "rust_exe": "examples/fib/fib_rs.exe",
+      "build_script": "examples/fib/build.bat"
+    },
+    {
+      "name": "word_count",
+      "kind": "runtime",
+      "description": "Word count 256 KB buffer x 200",
+      "mettle_source": "examples/word_count/word_count.mettle",
+      "mettle_exe": "examples/word_count/word_count.exe",
+      "c_source": "examples/word_count/word_count.c",
+      "c_exe": "examples/word_count/word_count_c.exe",
+      "rust_source": "examples/word_count/word_count.rs",
+      "rust_exe": "examples/word_count/word_count_rs.exe",
+      "build_script": "examples/word_count/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "grep",
+      "kind": "runtime",
+      "description": "Grep ERROR 1 MiB x 200",
+      "mettle_source": "examples/grep/grep.mettle",
+      "mettle_exe": "examples/grep/grep.exe",
+      "c_source": "examples/grep/grep.c",
+      "c_exe": "examples/grep/grep_c.exe",
+      "rust_source": "examples/grep/grep.rs",
+      "rust_exe": "examples/grep/grep_rs.exe",
+      "build_script": "examples/grep/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "sum_squares",
+      "kind": "runtime",
+      "description": "Sum of squares 1..100000 x 200",
+      "mettle_source": "examples/sum_squares/sum_squares.mettle",
+      "mettle_exe": "examples/sum_squares/sum_squares.exe",
+      "c_source": "examples/sum_squares/sum_squares.c",
+      "c_exe": "examples/sum_squares/sum_squares_c.exe",
+      "rust_source": "examples/sum_squares/sum_squares.rs",
+      "rust_exe": "examples/sum_squares/sum_squares_rs.exe",
+      "build_script": "examples/sum_squares/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "collatz",
+      "kind": "runtime",
+      "description": "Collatz steps 1..100000 x 10",
+      "mettle_source": "examples/collatz/collatz.mettle",
+      "mettle_exe": "examples/collatz/collatz.exe",
+      "c_source": "examples/collatz/collatz.c",
+      "c_exe": "examples/collatz/collatz_c.exe",
+      "rust_source": "examples/collatz/collatz.rs",
+      "rust_exe": "examples/collatz/collatz_rs.exe",
+      "build_script": "examples/collatz/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "byte_hash",
+      "kind": "runtime",
+      "description": "djb2 hash 256 KB buffer x 200",
+      "mettle_source": "examples/byte_hash/byte_hash.mettle",
+      "mettle_exe": "examples/byte_hash/byte_hash.exe",
+      "c_source": "examples/byte_hash/byte_hash.c",
+      "c_exe": "examples/byte_hash/byte_hash_c.exe",
+      "rust_source": "examples/byte_hash/byte_hash.rs",
+      "rust_exe": "examples/byte_hash/byte_hash_rs.exe",
+      "build_script": "examples/byte_hash/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "prime_count",
+      "kind": "runtime",
+      "description": "Prime count up to 50000 x 200",
+      "mettle_source": "examples/prime_count/prime_count.mettle",
+      "mettle_exe": "examples/prime_count/prime_count.exe",
+      "c_source": "examples/prime_count/prime_count.c",
+      "c_exe": "examples/prime_count/prime_count_c.exe",
+      "rust_source": "examples/prime_count/prime_count.rs",
+      "rust_exe": "examples/prime_count/prime_count_rs.exe",
+      "build_script": "examples/prime_count/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "matrix_mul",
+      "kind": "runtime",
+      "description": "32x32 int32 matrix multiply x 200 (Mettle: 4-unrolled pointers; C: naive mat_idx -- GCC -O3 vectorizes C heavily)",
+      "track_asm": true,
+      "mettle_source": "examples/matrix_mul/matrix_mul.mettle",
+      "mettle_exe": "examples/matrix_mul/matrix_mul.exe",
+      "c_source": "examples/matrix_mul/matrix_mul.c",
+      "c_exe": "examples/matrix_mul/matrix_mul_c.exe",
+      "rust_source": "examples/matrix_mul/matrix_mul.rs",
+      "rust_exe": "examples/matrix_mul/matrix_mul_rs.exe",
+      "build_script": "examples/matrix_mul/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "sort_insertion",
+      "kind": "runtime",
+      "description": "Insertion sort 512 int32 values x 200 (Mettle/C structurally similar; gap is memcpy/SIMD/codegen)",
+      "track_asm": true,
+      "mettle_source": "examples/sort_insertion/sort_insertion.mettle",
+      "mettle_exe": "examples/sort_insertion/sort_insertion.exe",
+      "c_source": "examples/sort_insertion/sort_insertion.c",
+      "c_exe": "examples/sort_insertion/sort_insertion_c.exe",
+      "rust_source": "examples/sort_insertion/sort_insertion.rs",
+      "rust_exe": "examples/sort_insertion/sort_insertion_rs.exe",
+      "build_script": "examples/sort_insertion/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "memcpy_bench",
+      "kind": "runtime",
+      "description": "memcpy 256 KB buffer x 200 (memory bandwidth / libc memcpy path)",
+      "mettle_source": "examples/memcpy_bench/memcpy_bench.mettle",
+      "mettle_exe": "examples/memcpy_bench/memcpy_bench.exe",
+      "c_source": "examples/memcpy_bench/memcpy_bench.c",
+      "c_exe": "examples/memcpy_bench/memcpy_bench_c.exe",
+      "build_script": "examples/memcpy_bench/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "memset_bench",
+      "kind": "runtime",
+      "description": "memset 256 KB buffer x 200 (fill bandwidth / libc memset path)",
+      "mettle_source": "examples/memset_bench/memset_bench.mettle",
+      "mettle_exe": "examples/memset_bench/memset_bench.exe",
+      "c_source": "examples/memset_bench/memset_bench.c",
+      "c_exe": "examples/memset_bench/memset_bench_c.exe",
+      "build_script": "examples/memset_bench/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "memcmp_bench",
+      "kind": "runtime",
+      "description": "Byte-compare 256 KB in 4 KB chunks x 200 (manual compare loop)",
+      "mettle_source": "examples/memcmp_bench/memcmp_bench.mettle",
+      "mettle_exe": "examples/memcmp_bench/memcmp_bench.exe",
+      "c_source": "examples/memcmp_bench/memcmp_bench.c",
+      "c_exe": "examples/memcmp_bench/memcmp_bench_c.exe",
+      "build_script": "examples/memcmp_bench/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "binary_search",
+      "kind": "runtime",
+      "description": "Lower-bound search in sorted 65536 int32 array, 50000 queries x 200",
+      "mettle_source": "examples/binary_search/binary_search.mettle",
+      "mettle_exe": "examples/binary_search/binary_search.exe",
+      "c_source": "examples/binary_search/binary_search.c",
+      "c_exe": "examples/binary_search/binary_search_c.exe",
+      "build_script": "examples/binary_search/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "dot_product",
+      "kind": "runtime",
+      "description": "int32 dot product of 65536-element vectors x 200 (SIMD reduction)",
+      "mettle_source": "examples/dot_product/dot_product.mettle",
+      "mettle_exe": "examples/dot_product/dot_product.exe",
+      "c_source": "examples/dot_product/dot_product.c",
+      "c_exe": "examples/dot_product/dot_product_c.exe",
+      "build_script": "examples/dot_product/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "lcg_rng",
+      "kind": "runtime",
+      "description": "LCG PRNG 1M iterations x 200 (integer mul/add hot loop)",
+      "mettle_source": "examples/lcg_rng/lcg_rng.mettle",
+      "mettle_exe": "examples/lcg_rng/lcg_rng.exe",
+      "c_source": "examples/lcg_rng/lcg_rng.c",
+      "c_exe": "examples/lcg_rng/lcg_rng_c.exe",
+      "build_script": "examples/lcg_rng/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "prefix_sum",
+      "kind": "runtime",
+      "description": "Inclusive prefix sum over 65536 int32 values x 200 (scan / SIMD)",
+      "mettle_source": "examples/prefix_sum/prefix_sum.mettle",
+      "mettle_exe": "examples/prefix_sum/prefix_sum.exe",
+      "c_source": "examples/prefix_sum/prefix_sum.c",
+      "c_exe": "examples/prefix_sum/prefix_sum_c.exe",
+      "build_script": "examples/prefix_sum/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "popcount",
+      "kind": "runtime",
+      "description": "Population count over 256 KB byte buffer x 200 (bit ops)",
+      "mettle_source": "examples/popcount/popcount.mettle",
+      "mettle_exe": "examples/popcount/popcount.exe",
+      "c_source": "examples/popcount/popcount.c",
+      "c_exe": "examples/popcount/popcount_c.exe",
+      "build_script": "examples/popcount/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "reverse_i32",
+      "kind": "runtime",
+      "description": "Reverse-copy 65536 int32 values x 200 (indexed memory access)",
+      "mettle_source": "examples/reverse_i32/reverse_i32.mettle",
+      "mettle_exe": "examples/reverse_i32/reverse_i32.exe",
+      "c_source": "examples/reverse_i32/reverse_i32.c",
+      "c_exe": "examples/reverse_i32/reverse_i32_c.exe",
+      "build_script": "examples/reverse_i32/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "minmax_scan",
+      "kind": "runtime",
+      "description": "Min/max scan over 65536 int32 values x 200 (branchy reduction)",
+      "mettle_source": "examples/minmax_scan/minmax_scan.mettle",
+      "mettle_exe": "examples/minmax_scan/minmax_scan.exe",
+      "c_source": "examples/minmax_scan/minmax_scan.c",
+      "c_exe": "examples/minmax_scan/minmax_scan_c.exe",
+      "build_script": "examples/minmax_scan/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "scale_i32",
+      "kind": "runtime",
+      "description": "dst[i] = src[i]*3+7 over 65536 int32 values x 200 (map / vectorize)",
+      "mettle_source": "examples/scale_i32/scale_i32.mettle",
+      "mettle_exe": "examples/scale_i32/scale_i32.exe",
+      "c_source": "examples/scale_i32/scale_i32.c",
+      "c_exe": "examples/scale_i32/scale_i32_c.exe",
+      "build_script": "examples/scale_i32/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "clamp_i32",
+      "kind": "runtime",
+      "description": "clamp(src[i], -100, 100) over 65536 int32 values x 200 (branchy map)",
+      "mettle_source": "examples/clamp_i32/clamp_i32.mettle",
+      "mettle_exe": "examples/clamp_i32/clamp_i32.exe",
+      "c_source": "examples/clamp_i32/clamp_i32.c",
+      "c_exe": "examples/clamp_i32/clamp_i32_c.exe",
+      "build_script": "examples/clamp_i32/build.bat",
+      "suite": 1
+    },
+    {
+      "name": "float_sum",
+      "kind": "runtime",
+      "description": "float64 sum reduction 65536 elems x 4000 (FP auto-vectorization gap)",
+      "mettle_source": "examples/float_sum/float_sum.mettle",
+      "mettle_exe": "examples/float_sum/float_sum.exe",
+      "c_source": "examples/float_sum/float_sum.c",
+      "c_exe": "examples/float_sum/float_sum_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "mandelbrot",
+      "kind": "runtime",
+      "description": "Mandelbrot 600x400, 256 iters x 30 (float64-heavy branchy inner loop)",
+      "mettle_source": "examples/mandelbrot/mandelbrot.mettle",
+      "mettle_exe": "examples/mandelbrot/mandelbrot.exe",
+      "c_source": "examples/mandelbrot/mandelbrot.c",
+      "c_exe": "examples/mandelbrot/mandelbrot_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "rec_fib",
+      "kind": "runtime",
+      "description": "Recursive fib(34) x 5 (raw function-call overhead, no inlining)",
+      "mettle_source": "examples/rec_fib/rec_fib.mettle",
+      "mettle_exe": "examples/rec_fib/rec_fib.exe",
+      "c_source": "examples/rec_fib/rec_fib.c",
+      "c_exe": "examples/rec_fib/rec_fib_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "int_divmod",
+      "kind": "runtime",
+      "description": "64-bit div+mod 2M iters x 40 (long-latency DIV throughput)",
+      "mettle_source": "examples/int_divmod/int_divmod.mettle",
+      "mettle_exe": "examples/int_divmod/int_divmod.exe",
+      "c_source": "examples/int_divmod/int_divmod.c",
+      "c_exe": "examples/int_divmod/int_divmod_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "leaf_call",
+      "kind": "runtime",
+      "description": "Direct leaf call 60M x 5 (small-function inlining)",
+      "mettle_source": "examples/leaf_call/leaf_call.mettle",
+      "mettle_exe": "examples/leaf_call/leaf_call.exe",
+      "c_source": "examples/leaf_call/leaf_call.c",
+      "c_exe": "examples/leaf_call/leaf_call_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "func_ptr",
+      "kind": "runtime",
+      "description": "Indirect fn-ptr call 60M x 5 (indirect-call ABI cost)",
+      "mettle_source": "examples/func_ptr/func_ptr.mettle",
+      "mettle_exe": "examples/func_ptr/func_ptr.exe",
+      "c_source": "examples/func_ptr/func_ptr.c",
+      "c_exe": "examples/func_ptr/func_ptr_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "saxpy",
+      "kind": "runtime",
+      "description": "float64 SAXPY map 65536 x 3000 (FP map+store vectorization)",
+      "mettle_source": "examples/saxpy/saxpy.mettle",
+      "mettle_exe": "examples/saxpy/saxpy.exe",
+      "c_source": "examples/saxpy/saxpy.c",
+      "c_exe": "examples/saxpy/saxpy_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "fp_div",
+      "kind": "runtime",
+      "description": "float64 serial divide chain 20M x 20 (divsd latency)",
+      "mettle_source": "examples/fp_div/fp_div.mettle",
+      "mettle_exe": "examples/fp_div/fp_div.exe",
+      "c_source": "examples/fp_div/fp_div.c",
+      "c_exe": "examples/fp_div/fp_div_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "struct_byval",
+      "kind": "runtime",
+      "description": "32B struct by-value call 40M x 5 (aggregate-copy / SROA)",
+      "mettle_source": "examples/struct_byval/struct_byval.mettle",
+      "mettle_exe": "examples/struct_byval/struct_byval.exe",
+      "c_source": "examples/struct_byval/struct_byval.c",
+      "c_exe": "examples/struct_byval/struct_byval_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "switch_vm",
+      "kind": "runtime",
+      "description": "Bytecode VM switch dispatch 4096 ops x 30000 (jump-table dispatch)",
+      "mettle_source": "examples/switch_vm/switch_vm.mettle",
+      "mettle_exe": "examples/switch_vm/switch_vm.exe",
+      "c_source": "examples/switch_vm/switch_vm.c",
+      "c_exe": "examples/switch_vm/switch_vm_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "aos_sum",
+      "kind": "runtime",
+      "description": "Array-of-structs field walk 65536 x 2000 (in-place field load/store, not by-value)",
+      "mettle_source": "examples/aos_sum/aos_sum.mettle",
+      "mettle_exe": "examples/aos_sum/aos_sum.exe",
+      "c_source": "examples/aos_sum/aos_sum.c",
+      "c_exe": "examples/aos_sum/aos_sum_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "transpose",
+      "kind": "runtime",
+      "description": "256x256 int32 transpose x 4000 (2D index arithmetic + strided stores)",
+      "mettle_source": "examples/transpose/transpose.mettle",
+      "mettle_exe": "examples/transpose/transpose.exe",
+      "c_source": "examples/transpose/transpose.c",
+      "c_exe": "examples/transpose/transpose_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "const_mod",
+      "kind": "runtime",
+      "description": "Constant-divisor div/mod 20M x 20 (magic-multiply strength reduction)",
+      "mettle_source": "examples/const_mod/const_mod.mettle",
+      "mettle_exe": "examples/const_mod/const_mod.exe",
+      "c_source": "examples/const_mod/const_mod.c",
+      "c_exe": "examples/const_mod/const_mod_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "global_acc",
+      "kind": "runtime",
+      "description": "Global RMW hot loop 100M x 3 (register promotion of globals)",
+      "mettle_source": "examples/global_acc/global_acc.mettle",
+      "mettle_exe": "examples/global_acc/global_acc.exe",
+      "c_source": "examples/global_acc/global_acc.c",
+      "c_exe": "examples/global_acc/global_acc_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "i2f_conv",
+      "kind": "runtime",
+      "description": "int<->float64 conversion loop 30M x 20 (cvtsi2sd/cvttsd2si traffic)",
+      "mettle_source": "examples/i2f_conv/i2f_conv.mettle",
+      "mettle_exe": "examples/i2f_conv/i2f_conv.exe",
+      "c_source": "examples/i2f_conv/i2f_conv.c",
+      "c_exe": "examples/i2f_conv/i2f_conv_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "byte_arith",
+      "kind": "runtime",
+      "description": "uint8 buffer arithmetic 256KB x 2000 (narrow-type codegen)",
+      "mettle_source": "examples/byte_arith/byte_arith.mettle",
+      "mettle_exe": "examples/byte_arith/byte_arith.exe",
+      "c_source": "examples/byte_arith/byte_arith.c",
+      "c_exe": "examples/byte_arith/byte_arith_c.exe",
+      "suite": 1
+    },
+    {
+      "name": "quicksort",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Recursive quicksort over 2048 int32 values x 200 (Lomuto partition, recursion + swaps)",
+      "mettle_source": "examples/quicksort/quicksort.mettle",
+      "mettle_exe": "examples/quicksort/quicksort.exe",
+      "c_source": "examples/quicksort/quicksort.c",
+      "c_exe": "examples/quicksort/quicksort_c.exe",
+      "build_script": "examples/quicksort/build.bat"
+    },
+    {
+      "name": "crc32",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "CRC-32 (bit-by-bit) over 256 KB buffer x 200 (branchy bit-loop checksum)",
+      "mettle_source": "examples/crc32/crc32.mettle",
+      "mettle_exe": "examples/crc32/crc32.exe",
+      "c_source": "examples/crc32/crc32.c",
+      "c_exe": "examples/crc32/crc32_c.exe",
+      "build_script": "examples/crc32/build.bat"
+    },
+    {
+      "name": "base64_encode",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Base64 encode 256 KB buffer x 200 (byte-triplet table lookup)",
+      "mettle_source": "examples/base64_encode/base64_encode.mettle",
+      "mettle_exe": "examples/base64_encode/base64_encode.exe",
+      "c_source": "examples/base64_encode/base64_encode.c",
+      "c_exe": "examples/base64_encode/base64_encode_c.exe",
+      "build_script": "examples/base64_encode/build.bat"
+    },
+    {
+      "name": "linked_list_sum",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Shuffled singly-linked-list pointer chase over 65536 nodes x 200 (latency-bound indirect loads)",
+      "mettle_source": "examples/linked_list_sum/linked_list_sum.mettle",
+      "mettle_exe": "examples/linked_list_sum/linked_list_sum.exe",
+      "c_source": "examples/linked_list_sum/linked_list_sum.c",
+      "c_exe": "examples/linked_list_sum/linked_list_sum_c.exe",
+      "build_script": "examples/linked_list_sum/build.bat"
+    },
+    {
+      "name": "gather_sum",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Random gather sum a[b[i]] over a 64MB table x 20 (indirect-access software prefetching; hardware prefetchers defeated)",
+      "mettle_source": "examples/gather_sum/gather_sum.mettle",
+      "mettle_exe": "examples/gather_sum/gather_sum.exe",
+      "c_source": "examples/gather_sum/gather_sum.c",
+      "c_exe": "examples/gather_sum/gather_sum_c.exe",
+      "build_script": "examples/gather_sum/build.bat"
+    },
+    {
+      "name": "field_sum",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Field-selective walk over 1048576 wide (32B) records, summing one field x 100 (SoA layout factorization; GCC cannot relayout the heap)",
+      "mettle_source": "examples/field_sum/field_sum.mettle",
+      "mettle_exe": "examples/field_sum/field_sum.exe",
+      "c_source": "examples/field_sum/field_sum.c",
+      "c_exe": "examples/field_sum/field_sum_c.exe",
+      "build_script": "examples/field_sum/build.bat"
+    },
+    {
+      "name": "matvec",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "float64 512x512 matrix-vector multiply x 200 (row-major dot-product reduction)",
+      "mettle_source": "examples/matvec/matvec.mettle",
+      "mettle_exe": "examples/matvec/matvec.exe",
+      "c_source": "examples/matvec/matvec.c",
+      "c_exe": "examples/matvec/matvec_c.exe",
+      "build_script": "examples/matvec/build.bat"
+    },
+    {
+      "name": "heapsort",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "In-place binary-heap sort over 2048 int32 values x 200 (sift-down, non-recursive)",
+      "mettle_source": "examples/heapsort/heapsort.mettle",
+      "mettle_exe": "examples/heapsort/heapsort.exe",
+      "c_source": "examples/heapsort/heapsort.c",
+      "c_exe": "examples/heapsort/heapsort_c.exe",
+      "build_script": "examples/heapsort/build.bat"
+    },
+    {
+      "name": "merge_sort",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Recursive top-down merge sort over 2048 int32 values x 200 (scratch-buffer merge)",
+      "mettle_source": "examples/merge_sort/merge_sort.mettle",
+      "mettle_exe": "examples/merge_sort/merge_sort.exe",
+      "c_source": "examples/merge_sort/merge_sort.c",
+      "c_exe": "examples/merge_sort/merge_sort_c.exe",
+      "build_script": "examples/merge_sort/build.bat"
+    },
+    {
+      "name": "radix_sort",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "LSD radix sort (4x 8-bit digit passes) over 4096 uint32 values x 200 (counting-sort buckets)",
+      "mettle_source": "examples/radix_sort/radix_sort.mettle",
+      "mettle_exe": "examples/radix_sort/radix_sort.exe",
+      "c_source": "examples/radix_sort/radix_sort.c",
+      "c_exe": "examples/radix_sort/radix_sort_c.exe",
+      "build_script": "examples/radix_sort/build.bat"
+    },
+    {
+      "name": "rle_encode",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Run-length encode 256 KB buffer of runs x 200 (byte-run scan)",
+      "mettle_source": "examples/rle_encode/rle_encode.mettle",
+      "mettle_exe": "examples/rle_encode/rle_encode.exe",
+      "c_source": "examples/rle_encode/rle_encode.c",
+      "c_exe": "examples/rle_encode/rle_encode_c.exe",
+      "build_script": "examples/rle_encode/build.bat"
+    },
+    {
+      "name": "bst_insert",
+      "kind": "runtime",
+      "suite": 2,
+      "description": "Binary-search-tree build (4096 nodes) + recursive in-order traversal x 200 (pool-allocated, branchy recursion)",
+      "mettle_source": "examples/bst_insert/bst_insert.mettle",
+      "mettle_exe": "examples/bst_insert/bst_insert.exe",
+      "c_source": "examples/bst_insert/bst_insert.c",
+      "c_exe": "examples/bst_insert/bst_insert_c.exe",
+      "build_script": "examples/bst_insert/build.bat"
+    }
+  ],
+  "compile_benchmarks": [
+    {
+      "name": "parse_stress",
+      "description": "Compile 200k LOC flat globals (parse/typecheck stress)",
+      "mettle_source": "tests/parse_stress_test.mettle",
+      "profile": true
+    },
+    {
+      "name": "profiler",
+      "description": "Compile 226k LOC multi-function program (full pipeline stress)",
+      "mettle_source": "tests/profiler_test.mettle",
+      "profile": true
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+import "namespaced_math" as math;
+
+fn main() -> int32 {
+  return math.private_bonus();
+}

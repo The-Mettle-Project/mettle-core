@@ -1,0 +1,4 @@
+fn main() -> int32 {
+  var x: int32 = 5;
+  return x.y;
+}

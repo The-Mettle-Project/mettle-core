@@ -1,0 +1,23 @@
+import "std/io";
+
+fn then_err() { puts(cstr("THEN_ERR\n")); }
+fn then_ok() { puts(cstr("THEN_OK\n")); }
+fn else_err() { puts(cstr("ELSE_ERR\n")); }
+fn else_ok() { puts(cstr("ELSE_OK\n")); }
+fn outer_err() { puts(cstr("OUTER_ERR\n")); }
+fn outer_ok() { puts(cstr("OUTER_OK\n")); }
+
+fn main() -> int32 {
+  errdefer outer_err();
+  defer outer_ok();
+
+  if (0) {
+    errdefer then_err();
+    defer then_ok();
+    return 2;
+  } else {
+    errdefer else_err();
+    defer else_ok();
+    return 3;
+  }
+}

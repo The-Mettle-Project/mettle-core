@@ -1,0 +1,5 @@
+import "std/core";
+
+fn main() -> int32 {
+  return std_ok();
+}

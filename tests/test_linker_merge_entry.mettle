@@ -1,0 +1,5 @@
+extern fn add_one(x: int32) -> int32 = "add_one";
+
+fn mainCRTStartup() -> int32 {
+  return add_one(41);
+}

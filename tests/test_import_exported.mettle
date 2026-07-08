@@ -1,0 +1,5 @@
+import "shared_math";
+
+fn main() -> int32 {
+  return forty_two();
+}

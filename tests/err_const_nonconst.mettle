@@ -1,0 +1,11 @@
+// A constant initializer must be a compile-time integer constant expression.
+
+fn side() -> int32 {
+  return 7;
+}
+
+const BAD: int32 = side();
+
+fn main() -> int32 {
+  return BAD;
+}

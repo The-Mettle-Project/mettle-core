@@ -1,0 +1,11 @@
+fn identity<T>(val: T) -> T {
+    return val;
+}
+
+fn double_identity<T>(val: T) -> T {
+    return identity<T>(val);
+}
+
+fn main() -> int32 {
+    return double_identity<int32>(42);
+}

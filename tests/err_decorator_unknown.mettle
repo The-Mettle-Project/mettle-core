@@ -1,0 +1,8 @@
+// Unknown decorator name.
+@frobnicate fn f() -> int32 {
+  return 0;
+}
+
+fn main() -> int32 {
+  return f();
+}

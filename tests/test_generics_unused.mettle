@@ -1,0 +1,12 @@
+struct Container<T> {
+    data: T;
+    size: int32;
+}
+
+fn unused_generic<T>(val: T) -> T {
+    return val;
+}
+
+fn main() -> int32 {
+    return 0;
+}

@@ -1,0 +1,7 @@
+// extern function receiving signed integer — correct value at C boundary
+extern fn takes_int32(x: int32) -> int32 = "takes_int32";
+
+fn main() -> int32 {
+  var a: int32 = -1;
+  return takes_int32(a);
+}

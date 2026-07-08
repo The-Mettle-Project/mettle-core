@@ -1,0 +1,11 @@
+import "std/mem";
+
+extern fn db_open_file(path: cstring, create: int32) -> cstring = "fopen";
+
+fn cache_load(page_id: int64) -> int32 {
+  return 30;
+}
+
+fn main() -> int32 {
+  return cache_load(0);
+}

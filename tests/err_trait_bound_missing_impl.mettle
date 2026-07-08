@@ -1,0 +1,9 @@
+trait Addable;
+
+fn add_one<T: Addable>(value: T) -> T {
+    return value + 1;
+}
+
+fn main() -> int32 {
+    return add_one<int64>(41);
+}

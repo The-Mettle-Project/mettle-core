@@ -1,0 +1,5 @@
+extern fn fallback_value() -> int32;
+
+fn main() -> int32 {
+  return fallback_value();
+}

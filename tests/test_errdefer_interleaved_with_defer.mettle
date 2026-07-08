@@ -1,0 +1,14 @@
+import "std/io";
+
+fn a() { puts(cstr("A\n")); }
+fn b() { puts(cstr("B\n")); }
+fn c() { puts(cstr("C\n")); }
+fn d() { puts(cstr("D\n")); }
+
+fn main() -> int32 {
+  defer a();
+  errdefer b();
+  defer c();
+  errdefer d();
+  return 1;
+}
