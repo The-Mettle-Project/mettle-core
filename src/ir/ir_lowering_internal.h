@@ -2,11 +2,11 @@
 #define IR_LOWERING_INTERNAL_H
 
 // Shared internals for the AST->IR lowering pass, split across ir_lower*.c
-// modules. The public entry point ir_lower_program lives in ir.h; this
-// header exposes the cross-module lowering context, helper structs, and
-// static-helper prototypes.
+// modules. The public entry point ir_lower_program lives in ir_lowering.h (the
+// frontend-facing lowering header); this header exposes the cross-module
+// lowering context, helper structs, and static-helper prototypes.
 
-#include "ir.h"
+#include "ir_lowering.h" // ir.h + frontend AST/type headers + lowering entry points
 #include "../common.h"
 #include "compiler/compiler_context.h"
 #include <limits.h>

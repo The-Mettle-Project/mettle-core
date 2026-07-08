@@ -37,7 +37,7 @@ exit /b 1
 if not defined CC set "CC=gcc"
 if defined METTLE_SKIP_TESTS set "SKIP_TESTS=1"
 
-set CFLAGS=-Wall -Wextra -std=c99 -g -O2 -D_GNU_SOURCE -Isrc -fno-omit-frame-pointer
+set CFLAGS=-Wall -Wextra -std=c99 -g -O2 -D_GNU_SOURCE -Isrc -Iinclude -fno-omit-frame-pointer
 if /I "%CC%"=="clang" set "CFLAGS=%CFLAGS% -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS"
 REM Release builds stamp the version via METTLE_VERSION (e.g. set by release.yml);
 REM dev builds fall back to the default in main.c.
@@ -83,6 +83,7 @@ if not exist obj\debug mkdir obj\debug
 if not exist obj\error mkdir obj\error
 if not exist obj\compiler mkdir obj\compiler
 if not exist obj\runtime mkdir obj\runtime
+if not exist obj\frontend mkdir obj\frontend
 if not exist bin mkdir bin
 
 REM Compile source files
@@ -220,12 +221,54 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 %CC% %CFLAGS% -c src\compiler\compiler_crash.c -o obj\compiler\compiler_crash.o
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+echo Compiling libmtlc public API...
+%CC% %CFLAGS% -c src\mtlc_api.c -o obj\mtlc_api.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+echo Compiling frontend-to-backend type adapter...
+%CC% %CFLAGS% -c src\frontend\mtlc_type_from_frontend.c -o obj\frontend\mtlc_type_from_frontend.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 echo Compiling main...
 %CC% %CFLAGS% -c src\main.c -o obj\main.o
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
-echo Linking...
-%CC% obj\common.o obj\lexer\lexer.o obj\parser\ast.o obj\parser\parser.o obj\semantic\symbol_table.o obj\semantic\type_checker.o obj\semantic\type_checker_types.o obj\semantic\type_checker_errors.o obj\semantic\type_checker_safety.o obj\semantic\type_checker_init_tracker.o obj\semantic\type_checker_decl.o obj\semantic\type_checker_match.o obj\semantic\type_checker_stmt.o obj\semantic\type_checker_expr.o obj\semantic\type_checker_memory.o obj\semantic\register_allocator.o obj\semantic\import_resolver.o obj\semantic\monomorphize.o obj\ir\*.o obj\ir\optimizer\*.o obj\codegen\binary_emitter.o obj\codegen\code_generator.o obj\codegen\elf_emitter.o obj\codegen\program_entry.o obj\codegen\ptx_emitter.o obj\\codegen\\binary\\*.o obj\\linker\\*.o obj\debug\debug_info.o obj\error\error_reporter.o obj\error\error_explain.o obj\compiler\compiler_context.o obj\compiler\compiler_crash.o obj\runtime\crash_handler.o obj\tracy_build.o obj\main.o -o bin\mettle.exe %LDFLAGS%
+REM ---------------------------------------------------------------------------
+REM Archive the standalone backend into libmtlc, then link the reference frontend
+REM (this driver) against it. libmtlc = the IR core, optimizer + GNN, code
+REM generators, and native linker. The AST->IR lowering TUs (ir_lowering,
+REM ir_lower_*) are a FRONTEND concern and link into the driver, not the archive.
+REM ar does not expand wildcards, so add objects via a cmd FOR loop (which does).
+REM ---------------------------------------------------------------------------
+set "AR=ar"
+where %AR% >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    if /I "%CC%"=="clang" set "AR=llvm-ar"
+)
+where %AR% >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo Error: archiver '%AR%' not found on PATH ^(need binutils ar or llvm-ar^).
+    exit /b 1
+)
+
+echo Archiving libmtlc ^(backend: IR core, optimizer, codegen, linker^)...
+if exist bin\mtlc.lib del /Q bin\mtlc.lib
+REM Backend IR core -- explicitly listed to EXCLUDE the lowering TUs below.
+for %%o in (ir ir_comptime ir_debug_hooks ir_interp ir_optimize ir_pgo ir_profile ir_verify ml_gnn ml_opt mtlc_type) do %AR% rcs bin\mtlc.lib obj\ir\%%o.o
+for %%o in (obj\ir\optimizer\*.o) do %AR% rcs bin\mtlc.lib %%o
+for %%o in (obj\codegen\binary_emitter.o obj\codegen\code_generator.o obj\codegen\elf_emitter.o obj\codegen\program_entry.o obj\codegen\ptx_emitter.o) do %AR% rcs bin\mtlc.lib %%o
+for %%o in (obj\codegen\binary\*.o) do %AR% rcs bin\mtlc.lib %%o
+for %%o in (obj\linker\*.o) do %AR% rcs bin\mtlc.lib %%o
+%AR% rcs bin\mtlc.lib obj\debug\debug_info.o
+for %%o in (obj\compiler\*.o) do %AR% rcs bin\mtlc.lib %%o
+%AR% rcs bin\mtlc.lib obj\common.o obj\mtlc_api.o
+if not exist bin\mtlc.lib (
+    echo Build failed: bin\mtlc.lib was not created.
+    exit /b 1
+)
+
+echo Linking mettle ^(reference frontend^) against libmtlc...
+%CC% obj\lexer\lexer.o obj\parser\ast.o obj\parser\parser.o obj\semantic\symbol_table.o obj\semantic\type_checker.o obj\semantic\type_checker_types.o obj\semantic\type_checker_errors.o obj\semantic\type_checker_safety.o obj\semantic\type_checker_init_tracker.o obj\semantic\type_checker_decl.o obj\semantic\type_checker_match.o obj\semantic\type_checker_stmt.o obj\semantic\type_checker_expr.o obj\semantic\type_checker_memory.o obj\semantic\register_allocator.o obj\semantic\import_resolver.o obj\semantic\monomorphize.o obj\ir\ir_lowering.o obj\ir\ir_lower_address.o obj\ir\ir_lower_defer.o obj\ir\ir_lower_expr.o obj\ir\ir_lower_stmt.o obj\ir\ir_lower_support.o obj\ir\ir_lower_switch_match.o obj\ir\ir_lower_types.o obj\frontend\mtlc_type_from_frontend.o obj\error\error_reporter.o obj\error\error_explain.o obj\runtime\crash_handler.o obj\tracy_build.o obj\main.o bin\mtlc.lib -o bin\mettle.exe %LDFLAGS%
 
 if %ERRORLEVEL% NEQ 0 (
     echo Build failed!

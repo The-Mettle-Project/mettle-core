@@ -3,7 +3,7 @@ CC = gcc
 #   make EXTRA_CFLAGS='-DMETTLE_VERSION_RAW=v0.13.0'
 # (bare token, stringified in main.c - avoids fragile quote escaping)
 EXTRA_CFLAGS =
-CFLAGS = -Wall -Wextra -std=c99 -g -O2 -D_GNU_SOURCE -Isrc -fno-omit-frame-pointer $(EXTRA_CFLAGS)
+CFLAGS = -Wall -Wextra -std=c99 -g -O2 -D_GNU_SOURCE -Isrc -Iinclude -fno-omit-frame-pointer $(EXTRA_CFLAGS)
 LDFLAGS =
 ifneq ($(filter Linux linux-gnu,$(shell uname -s 2>/dev/null)),)
 # glibc < 2.34 (e.g. Rocky 8 / glibc 2.28) ships pthread + dl as separate
@@ -22,7 +22,22 @@ RUNTIMEDIR = src/runtime
 LEXER_SOURCES = $(SRCDIR)/lexer/lexer.c
 PARSER_SOURCES = $(SRCDIR)/parser/parser.c $(SRCDIR)/parser/ast.c
 SEMANTIC_SOURCES = $(SRCDIR)/semantic/symbol_table.c $(SRCDIR)/semantic/type_checker.c $(SRCDIR)/semantic/type_checker_types.c $(SRCDIR)/semantic/type_checker_errors.c $(SRCDIR)/semantic/type_checker_safety.c $(SRCDIR)/semantic/type_checker_init_tracker.c $(SRCDIR)/semantic/type_checker_decl.c $(SRCDIR)/semantic/type_checker_match.c $(SRCDIR)/semantic/type_checker_stmt.c $(SRCDIR)/semantic/type_checker_expr.c $(SRCDIR)/semantic/type_checker_memory.c $(SRCDIR)/semantic/register_allocator.c $(SRCDIR)/semantic/import_resolver.c $(SRCDIR)/semantic/monomorphize.c
-IR_SOURCES = $(wildcard $(SRCDIR)/ir/*.c) $(wildcard $(SRCDIR)/ir/optimizer/*.c)
+# The AST->IR lowering pass is a FRONTEND concern (it consumes the frontend AST
+# and type system), so it links into the mettle driver, not into libmtlc.
+LOWERING_SOURCES = \
+	$(SRCDIR)/ir/ir_lowering.c \
+	$(SRCDIR)/ir/ir_lower_address.c \
+	$(SRCDIR)/ir/ir_lower_defer.c \
+	$(SRCDIR)/ir/ir_lower_expr.c \
+	$(SRCDIR)/ir/ir_lower_stmt.c \
+	$(SRCDIR)/ir/ir_lower_support.c \
+	$(SRCDIR)/ir/ir_lower_switch_match.c \
+	$(SRCDIR)/ir/ir_lower_types.c
+# Backend IR core (everything in src/ir except the lowering TUs) + optimizer.
+IR_CORE_SOURCES = $(filter-out $(LOWERING_SOURCES),$(wildcard $(SRCDIR)/ir/*.c)) $(wildcard $(SRCDIR)/ir/optimizer/*.c)
+# Public libmtlc API surface, and the frontend-side type-translation adapter.
+API_SOURCES = $(SRCDIR)/mtlc_api.c
+FRONTEND_ADAPTER_SOURCES = $(SRCDIR)/frontend/mtlc_type_from_frontend.c
 CODEGEN_SOURCES = \
 	$(SRCDIR)/codegen/binary_emitter.c \
 	$(SRCDIR)/codegen/code_generator.c \
@@ -37,17 +52,34 @@ COMPILER_SOURCES = $(SRCDIR)/compiler/compiler_context.c $(SRCDIR)/compiler/comp
 COMMON_SOURCES = $(SRCDIR)/common.c
 MAIN_SOURCES = $(SRCDIR)/main.c $(SRCDIR)/tracy_build.c
 
-SOURCES = $(COMMON_SOURCES) $(LEXER_SOURCES) $(PARSER_SOURCES) $(SEMANTIC_SOURCES) $(IR_SOURCES) $(CODEGEN_SOURCES) $(LINKER_SOURCES) $(ERROR_SOURCES) $(DEBUG_SOURCES) $(COMPILER_SOURCES) $(MAIN_SOURCES)
-OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+# libmtlc: the standalone, frontend-agnostic backend (IR core, optimizer + GNN,
+# code generators, native linker, public API).
+BACKEND_SOURCES = $(COMMON_SOURCES) $(IR_CORE_SOURCES) $(CODEGEN_SOURCES) $(LINKER_SOURCES) $(DEBUG_SOURCES) $(COMPILER_SOURCES) $(API_SOURCES)
+# The reference frontend / driver that consumes libmtlc.
+FRONTEND_SOURCES = $(LEXER_SOURCES) $(PARSER_SOURCES) $(SEMANTIC_SOURCES) $(LOWERING_SOURCES) $(FRONTEND_ADAPTER_SOURCES) $(ERROR_SOURCES) $(MAIN_SOURCES)
 
+BACKEND_OBJECTS = $(BACKEND_SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+FRONTEND_OBJECTS = $(FRONTEND_SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+
+AR = ar
+LIBMTLC = $(BINDIR)/libmtlc.a
 TARGET = $(BINDIR)/mettle
 
-.PHONY: all clean test install bundle-stdlib bundle-runtime
+.PHONY: all clean test install bundle-stdlib bundle-runtime libmtlc
 
 all: $(TARGET) bundle-stdlib bundle-runtime
+libmtlc: $(LIBMTLC)
 
-$(TARGET): $(OBJECTS) | $(BINDIR)
-	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+# The static archive is the backend product. It has unresolved references to the
+# frontend (codegen still re-derives some types from the frontend type system --
+# the documented Phase-2 bridge); those resolve when a frontend links against it,
+# as the mettle driver does below.
+$(LIBMTLC): $(BACKEND_OBJECTS) | $(BINDIR)
+	rm -f $@
+	$(AR) rcs $@ $(BACKEND_OBJECTS)
+
+$(TARGET): $(FRONTEND_OBJECTS) $(LIBMTLC) | $(BINDIR)
+	$(CC) $(FRONTEND_OBJECTS) $(LIBMTLC) -o $@ $(LDFLAGS)
 
 bundle-stdlib: | $(BINDIR)
 	rm -rf $(BINDIR)/stdlib
@@ -79,7 +111,7 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJDIR):
-	mkdir -p $(OBJDIR)/lexer $(OBJDIR)/parser $(OBJDIR)/semantic $(OBJDIR)/ir $(OBJDIR)/ir/optimizer $(OBJDIR)/codegen $(OBJDIR)/codegen/binary $(OBJDIR)/linker $(OBJDIR)/error $(OBJDIR)/debug $(OBJDIR)/compiler $(OBJDIR)/runtime
+	mkdir -p $(OBJDIR)/lexer $(OBJDIR)/parser $(OBJDIR)/semantic $(OBJDIR)/ir $(OBJDIR)/ir/optimizer $(OBJDIR)/codegen $(OBJDIR)/codegen/binary $(OBJDIR)/linker $(OBJDIR)/error $(OBJDIR)/debug $(OBJDIR)/compiler $(OBJDIR)/runtime $(OBJDIR)/frontend
 
 $(BINDIR):
 	mkdir -p $(BINDIR)

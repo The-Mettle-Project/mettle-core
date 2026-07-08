@@ -2549,6 +2549,7 @@ int code_generator_binary_try_emit_binary_expression_chain(
    * producer expression — decides DIV vs IDIV / SHR vs SAR. (div/mod/>> are
    * non-commutative, so the commutative branch above never lands here with one
    * of them.) */
+  /* MTLC-PHASE2: re-derives Type from the origin AST node. */
   int consumer_lhs_unsigned = binary_type_is_unsigned_integer(
       producer->ast_ref
           ? code_generator_infer_expression_type(generator, producer->ast_ref)

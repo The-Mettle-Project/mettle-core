@@ -4872,6 +4872,8 @@ int code_generator_binary_emit_binary(CodeGenerator *generator,
     return 0;
   }
 
+  /* MTLC-PHASE2: re-derives Type from the origin AST node; replace with a
+   * baked-in MtlcType on the IR instruction. */
   Type *result_type = instruction->ast_ref
                           ? code_generator_infer_expression_type(
                                 generator, instruction->ast_ref)

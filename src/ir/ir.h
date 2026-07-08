@@ -1,9 +1,15 @@
 #ifndef IR_H
 #define IR_H
 
-#include "../parser/ast.h"
-#include "../semantic/symbol_table.h"
-#include "../semantic/type_checker.h"
+/* libmtlc backend IR - deliberately frontend-free.
+ *
+ * This header defines the backend's own intermediate representation and must not
+ * depend on any frontend's AST or type system. The AST->IR lowering pass (a
+ * frontend concern) lives behind ir_lowering.h, which DOES see the frontend
+ * types; everything below the lowering boundary (optimizer, codegen, linker)
+ * operates on this IR alone. */
+#include "../simd_attr.h"
+#include "../source_location.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -319,7 +325,14 @@ typedef struct {
    * contract checker. IR_OP_NEW and allocator calls are recognized by opcode/
    * name and don't need it. */
   int allocates;
-  ASTNode *ast_ref;
+  /* Opaque frontend origin pointer (the AST node this instruction was lowered
+   * from), or NULL for instructions the optimizer synthesized. The IR core and
+   * optimizer treat this as an opaque token (set/copy/NULL-test only); only the
+   * frontend that produced it, and the codegen bridge that still re-derives a
+   * type from it, ever cast it back to a concrete node type. Kept as void* so
+   * the backend IR carries no frontend AST dependency.
+   * MTLC-PHASE2: retire this once codegen reads a baked-in MtlcType instead. */
+  void *ast_ref;
 } IRInstruction;
 
 typedef struct {
@@ -419,14 +432,9 @@ IRProgram *ir_program_create(void);
 void ir_program_destroy(IRProgram *program);
 int ir_program_add_function(IRProgram *program, IRFunction *function);
 
-IRProgram *ir_lower_program(ASTNode *program, TypeChecker *type_checker,
-                            SymbolTable *symbol_table, char **error_message,
-                            int emit_runtime_checks);
-/* --explain: when enabled, lowering brackets EVERY loop (not just `@simd` ones)
- * with report-only markers (SIMD_ATTR_REPORT) so the optimizer can report what
- * became of each one. Set by the driver before ir_lower_program; only
- * meaningful when optimization will run. */
-void ir_lowering_set_explain(int enabled);
+/* ir_lower_program and ir_lowering_set_explain are the AST->IR lowering entry
+ * points. They reference frontend types (ASTNode/TypeChecker/SymbolTable) and so
+ * live in the frontend-facing header ir_lowering.h, not here. */
 int ir_program_dump(IRProgram *program, FILE *output);
 /* Human-readable mnemonic for an opcode (e.g. "simd_dot_i8"), used by dumps and
  * the `--simd-report` diagnostics. */

@@ -1,6 +1,8 @@
 #ifndef AST_H
 #define AST_H
 
+#include "../simd_attr.h"
+#include "../source_location.h"
 #include <stddef.h>
 
 typedef enum {
@@ -42,11 +44,8 @@ typedef enum {
   AST_CLOSURE_ADAPT_EXPRESSION
 } ASTNodeType;
 
-typedef struct {
-  size_t line;
-  size_t column;
-  const char *filename;
-} SourceLocation;
+/* SourceLocation moved to ../source_location.h so the backend IR can share it
+ * without depending on this AST header. */
 
 typedef struct ASTNode {
   ASTNodeType type;
@@ -288,14 +287,8 @@ typedef struct {
 } IfStatement;
 
 // SIMD vectorization attribute on a loop (`@simd` / `@simd!`).
-typedef enum {
-  SIMD_ATTR_NONE = 0,     // no attribute
-  SIMD_ATTR_HINT = 1,     // `@simd`  : best-effort; warn if it can't vectorize
-  SIMD_ATTR_CONTRACT = 2, // `@simd!` : hard contract; compile error if it can't
-  SIMD_ATTR_REPORT = 3    // internal: `--explain` marks every unannotated loop
-                          // so the verifier can report what became of it;
-                          // never warns or errors, only emits notes
-} SimdAttr;
+/* SimdAttr moved to ../simd_attr.h so the backend IR/optimizer can share it
+ * without depending on this AST header. */
 
 typedef struct {
   ASTNode *condition;

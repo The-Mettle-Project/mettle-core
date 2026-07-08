@@ -1776,6 +1776,7 @@ int code_generator_binary_instruction_compare_width(
   }
 
   if (instruction->ast_ref) {
+    /* MTLC-PHASE2: re-derives Type from the origin AST node. */
     type = code_generator_infer_expression_type(generator, instruction->ast_ref);
   }
   if (!type) {

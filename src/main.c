@@ -15,6 +15,7 @@
 #include "compiler/compiler_crash.h"
 #include "tracy_build.h"
 #include "ir/ir.h"
+#include "ir/ir_lowering.h" // ir_lower_program / ir_lowering_set_explain (frontend boundary)
 #include "ir/ir_optimize.h"
 #include "ir/ir_explain_memory.h"
 #include "ir/ir_profile.h"

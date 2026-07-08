@@ -1,3 +1,17 @@
+/* MTLC-PHASE2: residual frontend coupling in codegen.
+ *
+ * The IR core (ir.h) is now frontend-free, but the code generators still reach
+ * back into the reference frontend's type system at codegen time instead of
+ * reading type facts baked onto the IR. These are the bridge points to retire in
+ * Phase 2 (grep "MTLC-PHASE2" to find them all):
+ *   - code_generator_infer_expression_type(gen, ir->ast_ref): re-derives an
+ *     expression's Type from the origin AST node (abi.c, emit.c, peephole.c).
+ *   - type_checker_get_type_by_name(gen->type_checker, name): named-type lookup
+ *     (abi.c, emit.c, mir_lower.c, peephole.c).
+ *   - symbol_table_lookup(gen->symbol_table, name): symbol/type classification.
+ * Phase 2 bakes an MtlcType onto the relevant IR instructions/operands (via the
+ * frontend adapter, mtlc_type_from_frontend) so codegen consumes only IR and this
+ * file no longer includes the frontend AST/type-checker/symbol-table headers. */
 #include "code_generator_internal.h"
 #include "compiler/compiler_context.h"
 
