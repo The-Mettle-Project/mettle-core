@@ -78,8 +78,6 @@ void code_generator_record_runtime_trap_site(
     CodeGenerator *generator, const char *trap_pc_label, uint32_t kind,
     size_t line, size_t column, const char *filename,
     const char *message_template, const char *static_context);
-Type *code_generator_infer_expression_type(CodeGenerator *generator,
-                                           ASTNode *expression);
-int code_generator_is_floating_point_type(Type *type);
+int code_generator_is_floating_point_type(const MtlcType *type);
 
 #endif // CODE_GENERATOR_H

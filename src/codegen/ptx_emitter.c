@@ -162,57 +162,57 @@ static PtxVal *bind_value(PtxFn *fn, const char *name, PtxVal v) {
 static TypeKind base_kind_from_name(const char *s, int *is_unsigned) {
   *is_unsigned = (strstr(s, "uint") != NULL || strstr(s, "bool") != NULL);
   if (strstr(s, "float32") || strstr(s, "f32")) {
-    return TYPE_FLOAT32;
+    return MTLC_TYPE_FLOAT32;
   }
   if (strstr(s, "float64") || strstr(s, "double") || strstr(s, "float")) {
-    return TYPE_FLOAT64;
+    return MTLC_TYPE_FLOAT64;
   }
   if (strstr(s, "int64") || strstr(s, "uint64")) {
-    return *is_unsigned ? TYPE_UINT64 : TYPE_INT64;
+    return *is_unsigned ? MTLC_TYPE_UINT64 : MTLC_TYPE_INT64;
   }
   if (strstr(s, "int16") || strstr(s, "uint16")) {
-    return *is_unsigned ? TYPE_UINT16 : TYPE_INT16;
+    return *is_unsigned ? MTLC_TYPE_UINT16 : MTLC_TYPE_INT16;
   }
   if (strstr(s, "int8") || strstr(s, "uint8")) {
-    return *is_unsigned ? TYPE_UINT8 : TYPE_INT8;
+    return *is_unsigned ? MTLC_TYPE_UINT8 : MTLC_TYPE_INT8;
   }
   if (strstr(s, "int32") || strstr(s, "uint32")) {
-    return *is_unsigned ? TYPE_UINT32 : TYPE_INT32;
+    return *is_unsigned ? MTLC_TYPE_UINT32 : MTLC_TYPE_INT32;
   }
   if (strstr(s, "bool")) {
-    return TYPE_BOOL;
+    return MTLC_TYPE_BOOL;
   }
-  return TYPE_INT32;
+  return MTLC_TYPE_INT32;
 }
 static PtxClass class_of_kind(TypeKind k, int *is_unsigned) {
   switch (k) {
-  case TYPE_INT8:
-  case TYPE_INT16:
-  case TYPE_INT32:
+  case MTLC_TYPE_INT8:
+  case MTLC_TYPE_INT16:
+  case MTLC_TYPE_INT32:
     *is_unsigned = 0;
     return PC_B32;
-  case TYPE_UINT8:
-  case TYPE_UINT16:
-  case TYPE_UINT32:
-  case TYPE_BOOL:
+  case MTLC_TYPE_UINT8:
+  case MTLC_TYPE_UINT16:
+  case MTLC_TYPE_UINT32:
+  case MTLC_TYPE_BOOL:
     *is_unsigned = 1;
     return PC_B32;
-  case TYPE_INT64:
+  case MTLC_TYPE_INT64:
     *is_unsigned = 0;
     return PC_B64;
-  case TYPE_UINT64:
+  case MTLC_TYPE_UINT64:
     *is_unsigned = 1;
     return PC_B64;
-  case TYPE_FLOAT32:
+  case MTLC_TYPE_FLOAT32:
     *is_unsigned = 0;
     return PC_F32;
-  case TYPE_FLOAT64:
+  case MTLC_TYPE_FLOAT64:
     *is_unsigned = 0;
     return PC_F64;
-  case TYPE_POINTER:
-  case TYPE_ARRAY:
-  case TYPE_STRING:
-  case TYPE_FUNCTION_POINTER:
+  case MTLC_TYPE_POINTER:
+  case MTLC_TYPE_ARRAY:
+  case MTLC_TYPE_STRING:
+  case MTLC_TYPE_FUNCTION_POINTER:
     *is_unsigned = 1;
     return PC_B64;
   default:
@@ -232,7 +232,7 @@ static PtxVal descriptor_from_typename(const char *name) {
   int isu = 0;
   TypeKind base = base_kind_from_name(name, &isu);
   if (strstr(name, "cstring")) {
-    base = TYPE_UINT8;
+    base = MTLC_TYPE_UINT8;
   }
   if (ptr) {
     v.cls = PC_B64;
@@ -240,7 +240,7 @@ static PtxVal descriptor_from_typename(const char *name) {
     v.is_unsigned = 1;
     /* pointer-to-pointer (two or more '*') -> element is itself a pointer */
     const char *firstStar = strchr(name, '*');
-    v.elem = (firstStar && strchr(firstStar + 1, '*')) ? TYPE_POINTER : base;
+    v.elem = (firstStar && strchr(firstStar + 1, '*')) ? MTLC_TYPE_POINTER : base;
   } else {
     int u = 0;
     v.cls = class_of_kind(base, &u);
@@ -258,30 +258,30 @@ static PtxClass elem_class(TypeKind elem, int *is_unsigned) {
 /* PTX ld/st type suffix for a load/store of element kind */
 static const char *mem_type_suffix(TypeKind elem) {
   switch (elem) {
-  case TYPE_INT8:
+  case MTLC_TYPE_INT8:
     return "s8";
-  case TYPE_UINT8:
+  case MTLC_TYPE_UINT8:
     return "u8";
-  case TYPE_INT16:
+  case MTLC_TYPE_INT16:
     return "s16";
-  case TYPE_UINT16:
+  case MTLC_TYPE_UINT16:
     return "u16";
-  case TYPE_INT32:
+  case MTLC_TYPE_INT32:
     return "s32";
-  case TYPE_UINT32:
-  case TYPE_BOOL:
+  case MTLC_TYPE_UINT32:
+  case MTLC_TYPE_BOOL:
     return "u32";
-  case TYPE_INT64:
+  case MTLC_TYPE_INT64:
     return "s64";
-  case TYPE_UINT64:
-  case TYPE_POINTER:
-  case TYPE_ARRAY:
-  case TYPE_STRING:
-  case TYPE_FUNCTION_POINTER:
+  case MTLC_TYPE_UINT64:
+  case MTLC_TYPE_POINTER:
+  case MTLC_TYPE_ARRAY:
+  case MTLC_TYPE_STRING:
+  case MTLC_TYPE_FUNCTION_POINTER:
     return "u64";
-  case TYPE_FLOAT32:
+  case MTLC_TYPE_FLOAT32:
     return "f32";
-  case TYPE_FLOAT64:
+  case MTLC_TYPE_FLOAT64:
     return "f64";
   default:
     return "u32";
@@ -709,17 +709,17 @@ static void emit_function(IRProgram *program, size_t fi, CodeGenerator *gen,
     case IR_OP_LOAD: {
       /* dest <- *lhs [rhs size] */
       PtxVal addr = operand_desc(&fn, &in->lhs);
-      TypeKind elem = addr.is_ptr ? addr.elem : TYPE_VOID;
-      if (elem == TYPE_VOID) {
+      TypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
+      if (elem == MTLC_TYPE_VOID) {
         /* fall back to size + is_float */
         long long sz = (in->rhs.kind == IR_OPERAND_INT) ? in->rhs.int_value : 4;
         if (in->is_float) {
-          elem = (sz == 4) ? TYPE_FLOAT32 : TYPE_FLOAT64;
+          elem = (sz == 4) ? MTLC_TYPE_FLOAT32 : MTLC_TYPE_FLOAT64;
         } else {
-          elem = (sz == 8) ? TYPE_INT64
-                 : (sz == 2) ? TYPE_INT16
-                 : (sz == 1) ? TYPE_UINT8
-                             : TYPE_INT32;
+          elem = (sz == 8) ? MTLC_TYPE_INT64
+                 : (sz == 2) ? MTLC_TYPE_INT16
+                 : (sz == 1) ? MTLC_TYPE_UINT8
+                             : MTLC_TYPE_INT32;
         }
       }
       char addrreg[24];
@@ -742,16 +742,16 @@ static void emit_function(IRProgram *program, size_t fi, CodeGenerator *gen,
     case IR_OP_STORE: {
       /* *dest <- lhs [rhs size] */
       PtxVal addr = operand_desc(&fn, &in->dest);
-      TypeKind elem = addr.is_ptr ? addr.elem : TYPE_VOID;
-      if (elem == TYPE_VOID) {
+      TypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
+      if (elem == MTLC_TYPE_VOID) {
         long long sz = (in->rhs.kind == IR_OPERAND_INT) ? in->rhs.int_value : 4;
         if (in->is_float) {
-          elem = (sz == 4) ? TYPE_FLOAT32 : TYPE_FLOAT64;
+          elem = (sz == 4) ? MTLC_TYPE_FLOAT32 : MTLC_TYPE_FLOAT64;
         } else {
-          elem = (sz == 8) ? TYPE_INT64
-                 : (sz == 2) ? TYPE_INT16
-                 : (sz == 1) ? TYPE_UINT8
-                             : TYPE_INT32;
+          elem = (sz == 8) ? MTLC_TYPE_INT64
+                 : (sz == 2) ? MTLC_TYPE_INT16
+                 : (sz == 1) ? MTLC_TYPE_UINT8
+                             : MTLC_TYPE_INT32;
         }
       }
       int u = 0;

@@ -8,9 +8,9 @@
 /* An unsigned integer type (uint8/16/32/64). Drives DIV vs IDIV and SHR vs SAR
  * in the fallback expression-chain emitters, which must match the signedness
  * choice binary_emit_binary_integer makes. NULL/pointer/float/signed -> 0. */
-static int binary_type_is_unsigned_integer(const Type *type) {
-  return type && (type->kind == TYPE_UINT8 || type->kind == TYPE_UINT16 ||
-                  type->kind == TYPE_UINT32 || type->kind == TYPE_UINT64);
+static int binary_type_is_unsigned_integer(const MtlcType *type) {
+  return type && (type->kind == MTLC_TYPE_UINT8 || type->kind == MTLC_TYPE_UINT16 ||
+                  type->kind == MTLC_TYPE_UINT32 || type->kind == MTLC_TYPE_UINT64);
 }
 
 int code_generator_binary_is_compare_operator(const char *op) {
@@ -699,7 +699,7 @@ int code_generator_binary_emit_integer_binary_to_rax(
    * choice as binary_emit_binary_integer or an unsigned value used here (e.g. a
    * uint32 local in a large function that bailed MIR) silently miscompiles to
    * signed arithmetic. */
-  Type *lhs_type = code_generator_binary_get_operand_type_in_context(
+  MtlcType *lhs_type = code_generator_binary_get_operand_type_in_context(
       generator, context, &instruction->lhs);
   int lhs_unsigned = binary_type_is_unsigned_integer(lhs_type);
 
@@ -2334,7 +2334,7 @@ int code_generator_binary_try_emit_binary_cast_chain(
     size_t *consumed_out) {
   const IRInstruction *producer = NULL;
   const IRInstruction *cast = NULL;
-  Type *target_type = NULL;
+  MtlcType *target_type = NULL;
 
   if (consumed_out) {
     *consumed_out = 0;
@@ -2358,13 +2358,13 @@ int code_generator_binary_try_emit_binary_cast_chain(
   }
 
   target_type = generator->type_checker
-                    ? type_checker_get_type_by_name(generator->type_checker,
+                    ? code_generator_named_type(generator,
                                                     cast->text)
                     : NULL;
   if (target_type &&
       (code_generator_is_floating_point_type(target_type) ||
-       (target_type->kind != TYPE_POINTER &&
-        target_type->kind != TYPE_FUNCTION_POINTER &&
+       (target_type->kind != MTLC_TYPE_POINTER &&
+        target_type->kind != MTLC_TYPE_FUNCTION_POINTER &&
         target_type->size != 8))) {
     return 0;
   }
@@ -2549,11 +2549,9 @@ int code_generator_binary_try_emit_binary_expression_chain(
    * producer expression — decides DIV vs IDIV / SHR vs SAR. (div/mod/>> are
    * non-commutative, so the commutative branch above never lands here with one
    * of them.) */
-  /* MTLC-PHASE2: re-derives Type from the origin AST node. */
-  int consumer_lhs_unsigned = binary_type_is_unsigned_integer(
-      producer->ast_ref
-          ? code_generator_infer_expression_type(generator, producer->ast_ref)
-          : NULL);
+  /* Producer's result type baked onto the IR at lowering. */
+  int consumer_lhs_unsigned =
+      binary_type_is_unsigned_integer(producer->value_type);
 
   if (!code_generator_binary_emit_integer_binary_to_rax(generator, context,
                                                         producer) ||

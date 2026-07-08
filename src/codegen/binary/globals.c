@@ -289,14 +289,30 @@ IRFunction *code_generator_find_ir_function_binary(CodeGenerator *generator,
 
   return NULL;
 }
+/* IEEE width of an AST expression's resolved (frontend) type, by type name.
+ * MTLC-PHASE2 (2.4): this whole AST-based global-initializer evaluator is
+ * superseded by the initializer constants baked into the IR module symbol table
+ * at lowering; it (and this shim) will be removed when emit reads those. */
+static int gv_expr_float_bits(const ASTNode *e) {
+  if (!e || !e->resolved_type || !e->resolved_type->name) {
+    return 0;
+  }
+  const char *n = e->resolved_type->name;
+  if (strcmp(n, "float32") == 0) {
+    return 32;
+  }
+  if (strcmp(n, "float64") == 0) {
+    return 64;
+  }
+  return 0;
+}
+
 int code_generator_binary_numeric_constant_is_float(
     const BinaryNumericConstant *value, ASTNode *expression) {
   if (value && value->is_float) {
     return 1;
   }
-  return expression && expression->resolved_type &&
-         code_generator_binary_resolved_type_float_bits(
-             expression->resolved_type) != 0;
+  return expression && gv_expr_float_bits(expression) != 0;
 }
 
 void code_generator_binary_numeric_constant_from_double(
@@ -495,10 +511,7 @@ int code_generator_binary_eval_numeric_global_initializer(
                                                                &operand)) {
       return 0;
     }
-    target_float_bits = expression->resolved_type
-                            ? code_generator_binary_resolved_type_float_bits(
-                                  expression->resolved_type)
-                            : 0;
+    target_float_bits = gv_expr_float_bits(expression);
     if (target_float_bits != 0) {
       code_generator_binary_numeric_constant_from_double(
           out_value, operand.is_float ? operand.float_value
@@ -519,8 +532,8 @@ int code_generator_binary_eval_numeric_global_initializer(
 int code_generator_emit_binary_global_variable(CodeGenerator *generator,
                                                       VarDeclaration *var_data) {
   BinaryEmitter *emitter = NULL;
-  Symbol *symbol = NULL;
-  Type *type = NULL;
+  const CgSym *symbol = NULL;
+  MtlcType *type = NULL;
   const char *link_name = NULL;
   const char *section_name = NULL;
   BinarySectionKind section_kind = BINARY_SECTION_DATA;
@@ -541,7 +554,7 @@ int code_generator_emit_binary_global_variable(CodeGenerator *generator,
   }
 
   symbol = generator->symbol_table
-               ? symbol_table_lookup(generator->symbol_table, var_data->name)
+               ? code_generator_lookup_symbol(generator, var_data->name)
                : NULL;
   type = symbol ? symbol->type
                 : code_generator_binary_get_resolved_type(generator,
@@ -563,7 +576,7 @@ int code_generator_emit_binary_global_variable(CodeGenerator *generator,
     return 0;
   }
 
-  if (type->kind == TYPE_STRING) {
+  if (type->kind == MTLC_TYPE_STRING) {
     const char *initializer_value = NULL;
     StringLiteral *literal = NULL;
 
@@ -757,10 +770,10 @@ int code_generator_binary_collect_global_constants(
       continue;
     }
 
-    Type *type = code_generator_binary_get_resolved_type(generator,
+    MtlcType *type = code_generator_binary_get_resolved_type(generator,
                                                          var_data->type_name, 0);
     if (!type || !code_generator_binary_resolved_type_is_supported(type, 0) ||
-        type->kind == TYPE_STRING || type->kind == TYPE_VOID ||
+        type->kind == MTLC_TYPE_STRING || type->kind == MTLC_TYPE_VOID ||
         type->size == 0 || type->size > 8) {
       continue;
     }

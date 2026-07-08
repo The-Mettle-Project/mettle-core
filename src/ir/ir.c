@@ -679,6 +679,7 @@ void ir_program_destroy(IRProgram *program) {
       free(program->module_symbols[i].link_name);
       free(program->module_symbols[i].init_string);
       free(program->module_symbols[i].param_types);
+      free(program->module_symbols[i].codegen_view);
     }
     free(program->module_symbols);
   }

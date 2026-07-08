@@ -96,6 +96,52 @@ void code_generator_set_ir_program(CodeGenerator *generator,
   generator->ir_program = ir_program;
 }
 
+const MtlcType *code_generator_named_type(CodeGenerator *generator,
+                                          const char *name) {
+  if (!generator || !generator->ir_program || !name) {
+    return NULL;
+  }
+  return ir_program_lookup_type(generator->ir_program, name);
+}
+
+const CgSym *code_generator_lookup_symbol(CodeGenerator *generator,
+                                          const char *name) {
+  if (!generator || !generator->ir_program || !name) {
+    return NULL;
+  }
+  const IRModuleSymbol *m =
+      ir_program_lookup_symbol(generator->ir_program, name);
+  if (!m) {
+    return NULL;
+  }
+  if (!m->codegen_view) {
+    CgSym *v = calloc(1, sizeof(CgSym));
+    if (!v) {
+      return NULL;
+    }
+    v->kind = (m->kind == IR_MODSYM_FUNCTION)   ? SYMBOL_FUNCTION
+              : (m->kind == IR_MODSYM_CONSTANT) ? SYMBOL_CONSTANT
+                                                : SYMBOL_VARIABLE;
+    v->type = m->type;
+    v->is_extern = m->is_extern;
+    v->link_name = m->link_name;
+    /* Module symbols are global-scope; point at a shared SCOPE_GLOBAL sentinel
+     * so codegen's `scope->type == SCOPE_GLOBAL` guards read true. */
+    static const Scope module_scope = {.type = SCOPE_GLOBAL};
+    v->scope = &module_scope;
+    if (m->kind == IR_MODSYM_FUNCTION) {
+      v->data.function.return_type = m->return_type;
+      v->data.function.parameter_types = m->param_types;
+      v->data.function.parameter_count = m->param_count;
+    } else if (m->kind == IR_MODSYM_CONSTANT) {
+      v->data.constant.value = m->const_value;
+    }
+    /* Cache on the (logically const) IR symbol for reuse; one-shot lifetime. */
+    ((IRModuleSymbol *)m)->codegen_view = v;
+  }
+  return (const CgSym *)m->codegen_view;
+}
+
 int code_generator_generate_program(CodeGenerator *generator, ASTNode *program) {
   return code_generator_generate_program_binary_object(generator, program);
 }
@@ -284,98 +330,26 @@ char *code_generator_generate_label(CodeGenerator *generator,
   return label;
 }
 
-Type *code_generator_infer_expression_type(CodeGenerator *generator,
-                                           ASTNode *expression) {
-  static Type int_type = {
-      .kind = TYPE_INT32, .name = "int32", .size = 4, .alignment = 4};
-  static Type float_type = {
-      .kind = TYPE_FLOAT64, .name = "float64", .size = 8, .alignment = 8};
-  static Type string_type = {
-      .kind = TYPE_STRING, .name = "string", .size = 8, .alignment = 8};
+/* code_generator_infer_expression_type was removed in Phase 2: the result type
+ * of each expression instruction is now baked onto the IR (IRInstruction.value_type)
+ * at lowering, so codegen never re-derives it from the frontend AST/TypeChecker. */
 
-  if (!generator || !expression) {
-    return NULL;
-  }
-
-  if (generator->type_checker) {
-    Type *semantic_type =
-        type_checker_infer_type(generator->type_checker, expression);
-    if (semantic_type) {
-      return semantic_type;
-    }
-  }
-
-  switch (expression->type) {
-  case AST_NUMBER_LITERAL: {
-    NumberLiteral *num = (NumberLiteral *)expression->data;
-    return (num && num->is_float) ? &float_type : &int_type;
-  }
-  case AST_STRING_LITERAL:
-    return &string_type;
-  case AST_IDENTIFIER: {
-    Identifier *id = (Identifier *)expression->data;
-    if (id && id->name && generator->symbol_table) {
-      Symbol *symbol = symbol_table_lookup(generator->symbol_table, id->name);
-      if (symbol && symbol->type) {
-        return symbol->type;
-      }
-    }
-    return &int_type;
-  }
-  case AST_FUNCTION_CALL: {
-    CallExpression *call = (CallExpression *)expression->data;
-    if (call && call->function_name && generator->symbol_table) {
-      Symbol *func_symbol =
-          symbol_table_lookup(generator->symbol_table, call->function_name);
-      if (func_symbol && func_symbol->kind == SYMBOL_FUNCTION &&
-          func_symbol->type) {
-        return func_symbol->type;
-      }
-    }
-    return &int_type;
-  }
-  case AST_BINARY_EXPRESSION: {
-    BinaryExpression *bin = (BinaryExpression *)expression->data;
-    if (bin && bin->left) {
-      return code_generator_infer_expression_type(generator, bin->left);
-    }
-    return &int_type;
-  }
-  case AST_INDEX_EXPRESSION: {
-    ArrayIndexExpression *index_expr = (ArrayIndexExpression *)expression->data;
-    if (index_expr && index_expr->array) {
-      Type *array_type =
-          code_generator_infer_expression_type(generator, index_expr->array);
-      if (array_type &&
-          (array_type->kind == TYPE_ARRAY ||
-           array_type->kind == TYPE_POINTER) &&
-          array_type->base_type) {
-        return array_type->base_type;
-      }
-    }
-    return &int_type;
-  }
-  default:
-    return &int_type;
-  }
-}
-
-int code_generator_type_is_aggregate(const Type *type) {
+int code_generator_type_is_aggregate(const MtlcType *type) {
   if (!type) {
     return 0;
   }
-  return type->kind == TYPE_STRUCT || type->kind == TYPE_ARRAY ||
-         type->kind == TYPE_TAGGED_ENUM;
+  return type->kind == MTLC_TYPE_STRUCT || type->kind == MTLC_TYPE_ARRAY ||
+         type->kind == MTLC_TYPE_TAGGED_ENUM;
 }
 
-size_t code_generator_abi_type_size(const Type *type) {
+size_t code_generator_abi_type_size(const MtlcType *type) {
   if (!type) {
     return 0;
   }
   return type->size > 0 ? type->size : 8;
 }
 
-AbiPassKind code_generator_abi_classify(const Type *type) {
+AbiPassKind code_generator_abi_classify(const MtlcType *type) {
   if (!type || !code_generator_type_is_aggregate(type)) {
     return ABI_PASS_DIRECT;
   }
@@ -389,13 +363,7 @@ AbiPassKind code_generator_abi_classify(const Type *type) {
              : ABI_PASS_INDIRECT;
 }
 
-int code_generator_is_floating_point_type(Type *type) {
-  if (!type || !type->name) {
-    return 0;
-  }
-
-  return strcmp(type->name, "float32") == 0 ||
-         strcmp(type->name, "float64") == 0 ||
-         strcmp(type->name, "double") == 0 ||
-         strcmp(type->name, "float") == 0;
+int code_generator_is_floating_point_type(const MtlcType *type) {
+  return type &&
+         (type->kind == MTLC_TYPE_FLOAT32 || type->kind == MTLC_TYPE_FLOAT64);
 }

@@ -543,9 +543,9 @@ int code_generator_generate_program_binary_object(CodeGenerator *generator,
       // registered as an immutable variable instead and DOES need storage,
       // since the IR references it via a RIP-relative load like any global.
       if (var_data->is_const) {
-        Symbol *const_symbol =
+        const CgSym *const_symbol =
             generator->symbol_table
-                ? symbol_table_lookup(generator->symbol_table, var_data->name)
+                ? code_generator_lookup_symbol(generator, var_data->name)
                 : NULL;
         if (!const_symbol || const_symbol->kind == SYMBOL_CONSTANT) {
           break;

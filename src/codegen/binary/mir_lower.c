@@ -73,7 +73,7 @@ static int mir_name_is_global_scalar(CodeGenerator *g, const char *name) {
   if (!g || !g->symbol_table || !name) {
     return 0;
   }
-  Symbol *s = symbol_table_lookup(g->symbol_table, name);
+  const CgSym *s = code_generator_lookup_symbol(g, name);
   if (!s || s->kind != SYMBOL_VARIABLE || !s->scope ||
       s->scope->type != SCOPE_GLOBAL) {
     return 0;
@@ -372,7 +372,7 @@ static int mir_ir_operand_equal(const IROperand *a, const IROperand *b) {
 
 static int mir_operand_is_unsigned(CodeGenerator *g, BinaryFunctionContext *ctx,
                                    const IROperand *op) {
-  Type *t = code_generator_binary_get_operand_type_in_context(g, ctx, op);
+  MtlcType *t = code_generator_binary_get_operand_type_in_context(g, ctx, op);
   if (!t) {
     return 0; /* default signed */
   }
@@ -387,7 +387,7 @@ static int mir_cmp_operand_width(CodeGenerator *g, BinaryFunctionContext *ctx,
   if (op->kind == IR_OPERAND_INT) {
     return 0;
   }
-  Type *t = code_generator_binary_get_operand_type_in_context(g, ctx, op);
+  MtlcType *t = code_generator_binary_get_operand_type_in_context(g, ctx, op);
   if (!t || code_generator_type_is_aggregate(t) ||
       code_generator_binary_resolved_type_float_bits(t) != 0) {
     return 8;
@@ -421,7 +421,7 @@ static int mir_int_compare_width(CodeGenerator *g, BinaryFunctionContext *ctx,
 /* ---- eligibility -------------------------------------------------------- */
 
 static int mir_type_is_gp_scalar(CodeGenerator *g, const char *type_name) {
-  Type *t = code_generator_binary_get_resolved_type(g, type_name, 0);
+  MtlcType *t = code_generator_binary_get_resolved_type(g, type_name, 0);
   if (!t) {
     return 0;
   }
@@ -440,7 +440,7 @@ static int mir_type_is_numeric_scalar(CodeGenerator *g, const char *type_name) {
   if (mir_type_is_gp_scalar(g, type_name)) {
     return 1;
   }
-  Type *t = code_generator_binary_get_resolved_type(g, type_name, 0);
+  MtlcType *t = code_generator_binary_get_resolved_type(g, type_name, 0);
   return t && code_generator_binary_resolved_type_float_bits(t) != 0;
 }
 
@@ -451,7 +451,7 @@ static int mir_type_is_numeric_scalar(CodeGenerator *g, const char *type_name) {
  * non-power-of-2 aggregates are INDIRECT (hidden pointer) and still bail. */
 static int mir_type_is_direct_small_aggregate(CodeGenerator *g,
                                               const char *type_name) {
-  Type *t = code_generator_binary_get_resolved_type(g, type_name, 0);
+  MtlcType *t = code_generator_binary_get_resolved_type(g, type_name, 0);
   if (!t || !code_generator_type_is_aggregate(t)) {
     return 0;
   }
@@ -480,7 +480,7 @@ static int mir_type_is_mir_value(CodeGenerator *g, const char *type_name) {
  * through that pointer (&@p yields the pointer, not a stack home). */
 static int mir_type_is_indirect_aggregate(CodeGenerator *g,
                                           const char *type_name) {
-  Type *t = code_generator_binary_get_resolved_type(g, type_name, 0);
+  MtlcType *t = code_generator_binary_get_resolved_type(g, type_name, 0);
   return t && code_generator_type_is_aggregate(t) &&
          code_generator_abi_classify(t) == ABI_PASS_INDIRECT;
 }
@@ -499,7 +499,7 @@ static int mir_type_is_param_value(CodeGenerator *g, const char *type_name) {
  * code_generator_binary_get_operand_type_in_context does. *is_param_out (if
  * given) is set when the name is a parameter. Returns NULL for globals/unknown
  * names (which the caller resolves through the global symbol table). */
-static Type *mir_local_or_param_type(CodeGenerator *g,
+static MtlcType *mir_local_or_param_type(CodeGenerator *g,
                                      const IRFunction *ir_function,
                                      const char *name, int *is_param_out) {
   if (is_param_out) {
@@ -553,12 +553,12 @@ static int mir_dest_integer_narrow_width(CodeGenerator *g,
   if (!irf) {
     return 0;
   }
-  Type *t = mir_local_or_param_type(g, irf, dest->name, NULL);
+  MtlcType *t = mir_local_or_param_type(g, irf, dest->name, NULL);
   if (!t && g->symbol_table) {
     /* Not a local/param: a global scalar (its symbol never goes out of
      * scope). The cached-global vreg carries the value across the function
      * body, so it needs the same canonicalization as a local's vreg. */
-    Symbol *s = symbol_table_lookup(g->symbol_table, dest->name);
+    const CgSym *s = code_generator_lookup_symbol(g, dest->name);
     t = s ? s->type : NULL;
   }
   if (!t || code_generator_type_is_aggregate(t) ||
@@ -580,7 +580,7 @@ static int mir_dest_integer_narrow_width(CodeGenerator *g,
 static int mir_name_is_indirect_aggregate(CodeGenerator *g,
                                           const IRFunction *ir_function,
                                           const char *name) {
-  Type *t = mir_local_or_param_type(g, ir_function, name, NULL);
+  MtlcType *t = mir_local_or_param_type(g, ir_function, name, NULL);
   return t && code_generator_type_is_aggregate(t) &&
          code_generator_abi_classify(t) == ABI_PASS_INDIRECT;
 }
@@ -593,13 +593,13 @@ static int mir_name_is_indirect_struct_local(CodeGenerator *g,
                                              const IRFunction *ir_function,
                                              const char *name) {
   int is_param = 0;
-  Type *t = mir_local_or_param_type(g, ir_function, name, &is_param);
+  MtlcType *t = mir_local_or_param_type(g, ir_function, name, &is_param);
   return t && !is_param && code_generator_type_is_aggregate(t) &&
          code_generator_abi_classify(t) == ABI_PASS_INDIRECT;
 }
 
 /* roundup8 byte size of an INDIRECT aggregate type, or 0 if `t` isn't one. */
-static int mir_indirect_type_home_bytes(CodeGenerator *g, Type *t) {
+static int mir_indirect_type_home_bytes(CodeGenerator *g, MtlcType *t) {
   if (!t || !code_generator_type_is_aggregate(t) ||
       code_generator_abi_classify(t) != ABI_PASS_INDIRECT) {
     return 0;
@@ -623,12 +623,12 @@ static int mir_struct_temp_size(CodeGenerator *g, const IRFunction *irf,
   for (size_t i = 0; i < irf->instruction_count; i++) {
     const IRInstruction *in = &irf->instructions[i];
     if (in->op == IR_OP_CALL && in->text) {
-      Symbol *cal = symbol_table_lookup(g->symbol_table, in->text);
+      const CgSym *cal = code_generator_lookup_symbol(g, in->text);
       if (cal && cal->kind == SYMBOL_FUNCTION) {
         /* defined by a struct-returning call */
         if (in->dest.kind == IR_OPERAND_TEMP && in->dest.name &&
             strcmp(in->dest.name, name) == 0) {
-          Type *r = cal->data.function.return_type ? cal->data.function.return_type
+          MtlcType *r = cal->data.function.return_type ? cal->data.function.return_type
                                                    : cal->type;
           int hb = mir_indirect_type_home_bytes(g, r);
           if (hb) {
@@ -663,7 +663,7 @@ static int mir_struct_temp_size(CodeGenerator *g, const IRFunction *irf,
         other = &in->dest;
       }
       if (other && other->kind == IR_OPERAND_SYMBOL && other->name) {
-        Type *t = mir_local_or_param_type(g, irf, other->name, NULL);
+        MtlcType *t = mir_local_or_param_type(g, irf, other->name, NULL);
         int hb = mir_indirect_type_home_bytes(g, t);
         if (hb) {
           return hb;
@@ -684,7 +684,7 @@ static int mir_operand_struct_home_size(CodeGenerator *g,
     if (!mir_name_is_indirect_struct_local(g, irf, op->name)) {
       return 0;
     }
-    Type *t = mir_local_or_param_type(g, irf, op->name, NULL);
+    MtlcType *t = mir_local_or_param_type(g, irf, op->name, NULL);
     return mir_indirect_type_home_bytes(g, t);
   }
   if (op->kind == IR_OPERAND_TEMP && op->name) {
@@ -721,7 +721,7 @@ static int mir_temp_is_float(CodeGenerator *g, IRFunction *function,
       return mir_temp_is_float(g, function, in->lhs.name, depth + 1);
     }
     if (in->op == IR_OP_CALL && in->text && g->symbol_table) {
-      Symbol *callee = symbol_table_lookup(g->symbol_table, in->text);
+      const CgSym *callee = code_generator_lookup_symbol(g, in->text);
       if (callee && callee->kind == SYMBOL_FUNCTION) {
         return code_generator_binary_resolved_type_float_bits(
                    callee->data.function.return_type) != 0;
@@ -729,15 +729,15 @@ static int mir_temp_is_float(CodeGenerator *g, IRFunction *function,
     }
     if (in->op == IR_OP_CALL_INDIRECT && g->symbol_table &&
         in->lhs.kind == IR_OPERAND_SYMBOL && in->lhs.name) {
-      Type *ft = mir_local_or_param_type(g, function, in->lhs.name, NULL);
-      Symbol *callee = ft ? NULL : symbol_table_lookup(g->symbol_table,
+      MtlcType *ft = mir_local_or_param_type(g, function, in->lhs.name, NULL);
+      const CgSym *callee = ft ? NULL : code_generator_lookup_symbol(g,
                                                        in->lhs.name);
-      if (ft && ft->kind != TYPE_FUNCTION_POINTER) {
+      if (ft && ft->kind != MTLC_TYPE_FUNCTION_POINTER) {
         ft = NULL;
       }
       if (!ft) {
         ft = (callee && callee->type &&
-              callee->type->kind == TYPE_FUNCTION_POINTER)
+              callee->type->kind == MTLC_TYPE_FUNCTION_POINTER)
                  ? callee->type
                  : NULL;
       }
@@ -769,20 +769,20 @@ static int mir_call_is_runtime_trap(const IRInstruction *in) {
 static int mir_arg_float_bits(CodeGenerator *g, const IRFunction *ir_function,
                               const IROperand *op);
 
-static Type *mir_indirect_call_type(CodeGenerator *g,
+static MtlcType *mir_indirect_call_type(CodeGenerator *g,
                                     const IRFunction *ir_function,
                                     const IRInstruction *in) {
   if (!g || !in || in->lhs.kind != IR_OPERAND_SYMBOL || !in->lhs.name) {
     return NULL;
   }
-  Type *local = mir_local_or_param_type(g, ir_function, in->lhs.name, NULL);
-  if (local && local->kind == TYPE_FUNCTION_POINTER) {
+  MtlcType *local = mir_local_or_param_type(g, ir_function, in->lhs.name, NULL);
+  if (local && local->kind == MTLC_TYPE_FUNCTION_POINTER) {
     return local;
   }
-  Symbol *sym = g->symbol_table ? symbol_table_lookup(g->symbol_table,
+  const CgSym *sym = g->symbol_table ? code_generator_lookup_symbol(g,
                                                       in->lhs.name)
                                 : NULL;
-  return (sym && sym->type && sym->type->kind == TYPE_FUNCTION_POINTER)
+  return (sym && sym->type && sym->type->kind == MTLC_TYPE_FUNCTION_POINTER)
              ? sym->type
              : NULL;
 }
@@ -810,7 +810,7 @@ static int mir_call_indirect_is_supported(CodeGenerator *g,
     mir_call_trace("indirect_args>max");
     return 0;
   }
-  Type *ft = mir_indirect_call_type(g, ir_function, in);
+  MtlcType *ft = mir_indirect_call_type(g, ir_function, in);
   if (!ft) {
     mir_call_trace("indirect_no_type");
     return 0;
@@ -819,7 +819,7 @@ static int mir_call_indirect_is_supported(CodeGenerator *g,
     mir_call_trace("indirect_arity_mismatch");
     return 0;
   }
-  Type *ret = ft->fn_return_type;
+  MtlcType *ret = ft->fn_return_type;
   if (!code_generator_binary_resolved_type_is_abi_supported(ret, 1)) {
     mir_call_trace("indirect_ret_unsupported");
     return 0;
@@ -837,7 +837,7 @@ static int mir_call_indirect_is_supported(CodeGenerator *g,
 
   const BinaryAbi *call_abi = code_generator_binary_active_abi();
   for (size_t a = 0; a < in->argument_count; a++) {
-    Type *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
+    MtlcType *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
     const IROperand *arg = &in->arguments[a];
     if (!pt) {
       mir_call_trace("indirect_arg_no_type");
@@ -861,7 +861,7 @@ static int mir_call_indirect_is_supported(CodeGenerator *g,
       if (call_abi->counts_classes_separately) {
         size_t fbefore = 0;
         for (size_t b = 0; b < a; b++) {
-          Type *bt = ft->fn_param_types ? ft->fn_param_types[b] : NULL;
+          MtlcType *bt = ft->fn_param_types ? ft->fn_param_types[b] : NULL;
           if (bt && code_generator_binary_resolved_type_float_bits(bt) != 0) {
             fbefore++;
           }
@@ -906,8 +906,8 @@ static MirAddrofKind mir_addressof_kind(CodeGenerator *g,
   if (in->lhs.kind != IR_OPERAND_SYMBOL || !in->lhs.name) {
     return MIR_ADDROF_UNSUPPORTED;
   }
-  Symbol *sym = g && g->symbol_table
-                    ? symbol_table_lookup(g->symbol_table, in->lhs.name)
+  const CgSym *sym = g && g->symbol_table
+                    ? code_generator_lookup_symbol(g, in->lhs.name)
                     : NULL;
   if ((sym && sym->kind == SYMBOL_FUNCTION) ||
       mir_find_ir_function_named(g, in->lhs.name)) {
@@ -917,14 +917,14 @@ static MirAddrofKind mir_addressof_kind(CodeGenerator *g,
    * symbol table has popped function scope by codegen time, so a direct lookup
    * fails for locals/params). A NULL type means the name is a global/external. */
   int is_param = 0;
-  Type *t = mir_local_or_param_type(g, ir_function, in->lhs.name, &is_param);
+  MtlcType *t = mir_local_or_param_type(g, ir_function, in->lhs.name, &is_param);
   if (!t) {
     /* Not a local/param: a global (or extern). Only a plain scalar global is
      * supported (cached, kept coherent via flush/reload around pointer ops). */
     return mir_name_is_global_scalar(g, in->lhs.name) ? MIR_ADDROF_GLOBAL
                                                       : MIR_ADDROF_UNSUPPORTED;
   }
-  if (t->kind == TYPE_STRING) {
+  if (t->kind == MTLC_TYPE_STRING) {
     return MIR_ADDROF_UNSUPPORTED; /* string has its own (fat-pointer) address form */
   }
   /* An INDIRECT-aggregate parameter is passed by reference: the parameter value
@@ -959,12 +959,12 @@ static int mir_arg_float_bits(CodeGenerator *g, const IRFunction *ir_function,
        * symbol table holds only globals at codegen time, scope having been
        * popped). This is exactly the type lowering's mir_value_operand will see,
        * so the gate and the homing agree on which args are float. */
-      Type *lt = mir_local_or_param_type(g, ir_function, op->name, NULL);
+      MtlcType *lt = mir_local_or_param_type(g, ir_function, op->name, NULL);
       if (lt) {
         return code_generator_binary_resolved_type_float_bits(lt);
       }
       if (g && g->symbol_table) {
-        Symbol *s = symbol_table_lookup(g->symbol_table, op->name);
+        const CgSym *s = code_generator_lookup_symbol(g, op->name);
         if (s) {
           return code_generator_binary_resolved_type_float_bits(s->type);
         }
@@ -990,13 +990,13 @@ static int mir_call_is_supported(CodeGenerator *g,
     mir_call_trace("args>max");
     return 0;
   }
-  Symbol *callee =
-      g->symbol_table ? symbol_table_lookup(g->symbol_table, in->text) : NULL;
+  const CgSym *callee =
+      g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
   if (!callee || callee->kind != SYMBOL_FUNCTION) {
     mir_call_trace("not_known_function");
     return 0;
   }
-  Type *ret = callee->data.function.return_type
+  MtlcType *ret = callee->data.function.return_type
                   ? callee->data.function.return_type
                   : callee->type;
   int hidden = 0;
@@ -1020,7 +1020,7 @@ static int mir_call_is_supported(CodeGenerator *g,
    * positional under Win64) is still deferred to the fallback. */
   const BinaryAbi *call_abi = code_generator_binary_active_abi();
   for (size_t a = 0; a < in->argument_count; a++) {
-    Type *pt = callee->data.function.parameter_types
+    MtlcType *pt = callee->data.function.parameter_types
                    ? callee->data.function.parameter_types[a]
                    : NULL;
     const IROperand *arg = &in->arguments[a];
@@ -1042,7 +1042,7 @@ static int mir_call_is_supported(CodeGenerator *g,
         /* SysV: floats draw from their own register file in argument order. */
         size_t fbefore = 0;
         for (size_t b = 0; b < a; b++) {
-          Type *bt = callee->data.function.parameter_types
+          MtlcType *bt = callee->data.function.parameter_types
                          ? callee->data.function.parameter_types[b]
                          : NULL;
           if (bt && code_generator_binary_resolved_type_float_bits(bt) != 0) {
@@ -1151,7 +1151,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
       if (!mir_type_is_param_value(generator, pt)) {
         return mir_trace_bail(function_data, "sig:param_nonscalar");
       }
-      Type *rt = code_generator_binary_get_resolved_type(generator, pt, 0);
+      MtlcType *rt = code_generator_binary_get_resolved_type(generator, pt, 0);
       pis_float[i] =
           (rt && code_generator_binary_resolved_type_float_bits(rt) != 0) ? 1 : 0;
     }
@@ -2093,7 +2093,7 @@ static int mir_emit_global_flush_names(MirFunction *fn, CodeGenerator *g,
                                        size_t count) {
   for (size_t i = 0; i < count; i++) {
     const char *name = names[i];
-    Symbol *s = symbol_table_lookup(g->symbol_table, name);
+    const CgSym *s = code_generator_lookup_symbol(g, name);
     int size = s ? code_generator_binary_resolved_type_scalar_size(s->type) : 0;
     if (size != 1 && size != 2 && size != 4 && size != 8) {
       fn->has_error = 1;
@@ -2118,7 +2118,7 @@ static int mir_emit_global_reload_names(MirFunction *fn, CodeGenerator *g,
                                         size_t count) {
   for (size_t i = 0; i < count; i++) {
     const char *name = names[i];
-    Symbol *s = symbol_table_lookup(g->symbol_table, name);
+    const CgSym *s = code_generator_lookup_symbol(g, name);
     int size = s ? code_generator_binary_resolved_type_scalar_size(s->type) : 0;
     if (size != 1 && size != 2 && size != 4 && size != 8) {
       fn->has_error = 1;
@@ -2191,7 +2191,7 @@ static int mir_address_of_function_target(CodeGenerator *g,
   if (!g || !op || op->kind != IR_OPERAND_SYMBOL || !op->name) {
     return 0;
   }
-  Symbol *s = g->symbol_table ? symbol_table_lookup(g->symbol_table, op->name)
+  const CgSym *s = g->symbol_table ? code_generator_lookup_symbol(g, op->name)
                               : NULL;
   return (s && s->kind == SYMBOL_FUNCTION) ||
          mir_find_ir_function_named(g, op->name) != NULL;
@@ -2205,8 +2205,8 @@ static const char *mir_known_function_pointer_target(CodeGenerator *g,
     return NULL;
   }
   int is_param = 0;
-  Type *ft = mir_local_or_param_type(g, irf, name, &is_param);
-  if (!ft || is_param || ft->kind != TYPE_FUNCTION_POINTER) {
+  MtlcType *ft = mir_local_or_param_type(g, irf, name, &is_param);
+  if (!ft || is_param || ft->kind != MTLC_TYPE_FUNCTION_POINTER) {
     return NULL;
   }
 
@@ -2557,7 +2557,7 @@ static int mir_fused_cmp_imm(CodeGenerator *g, BinaryFunctionContext *ctx,
     }
     /* The cast target type is named by def->text (e.g. "int64"); the temp's dest
      * type is not registered in this context, so resolve from the name. */
-    Type *dt = code_generator_binary_get_resolved_type(g, def->text, 0);
+    MtlcType *dt = code_generator_binary_get_resolved_type(g, def->text, 0);
     if (!dt || code_generator_binary_resolved_type_float_bits(dt)) {
       return 0;
     }
@@ -2949,8 +2949,8 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * always resolvable; the dest operand's type is not (a temp has no
      * resolved type at -O0, which would silently drop a narrowing cast). Prefer
      * in->text, matching the fallback emitter, and fall back to the operand. */
-    Type *dt = (in->text && g->type_checker)
-                   ? type_checker_get_type_by_name(g->type_checker, in->text)
+    MtlcType *dt = (in->text && g->type_checker)
+                   ? code_generator_named_type(g, in->text)
                    : NULL;
     if (!dt) {
       dt = code_generator_binary_get_operand_type_in_context(g, ctx, &in->dest);
@@ -2968,7 +2968,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * value (e.g. a uint32 product) can carry garbage above its width — a plain
      * 64-bit move would carry that garbage into the wider value (e.g.
      * `(int64)(uint32_a * uint32_b)`). */
-    Type *st = code_generator_binary_get_operand_type_in_context(g, ctx, &in->lhs);
+    MtlcType *st = code_generator_binary_get_operand_type_in_context(g, ctx, &in->lhs);
     int sw = st ? code_generator_binary_resolved_type_scalar_size(st) : 0;
     int ssigned = st ? code_generator_binary_resolved_type_is_signed_integer(st)
                      : 1;
@@ -3214,9 +3214,9 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * LOCAL's home so the callee writes the result there directly. */
     int ret_indirect = 0;
     {
-      Symbol *rc =
-          g->symbol_table ? symbol_table_lookup(g->symbol_table, in->text) : NULL;
-      Type *rret = (rc && rc->kind == SYMBOL_FUNCTION)
+      const CgSym *rc =
+          g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
+      MtlcType *rret = (rc && rc->kind == SYMBOL_FUNCTION)
                        ? (rc->data.function.return_type ? rc->data.function.return_type
                                                         : rc->type)
                        : NULL;
@@ -3233,15 +3233,15 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * defaults to integer and a float arg is homed into a GP register (and a
      * float immediate then reaches the GP value path — an encoder error). */
     {
-      Symbol *fc = g->symbol_table
-                       ? symbol_table_lookup(g->symbol_table, in->text)
+      const CgSym *fc = g->symbol_table
+                       ? code_generator_lookup_symbol(g, in->text)
                        : NULL;
       if (fc && fc->kind == SYMBOL_FUNCTION &&
           fc->data.function.parameter_types) {
         for (size_t a = 0; a < in->argument_count &&
                            a < fc->data.function.parameter_count;
              a++) {
-          Type *pt = fc->data.function.parameter_types[a];
+          MtlcType *pt = fc->data.function.parameter_types[a];
           if (pt && code_generator_binary_resolved_type_float_bits(pt) != 0) {
             arg_is_float[a + (size_t)hidden] = 1;
           }
@@ -3270,12 +3270,12 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * pass &slot as the (integer) argument value. Eligibility has proven every
      * INDIRECT arg is a struct LOCAL, so its source is its stack home. */
     int indirect_off[MIR_MAX_PARAMS] = {0}; /* slot offset, or -1 if not indirect */
-    Symbol *call_callee =
-        g->symbol_table ? symbol_table_lookup(g->symbol_table, in->text) : NULL;
+    const CgSym *call_callee =
+        g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
     int indirect_region = 0;
     for (size_t a = 0; a < in->argument_count; a++) {
       indirect_off[a] = -1;
-      Type *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
+      MtlcType *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
                   call_callee->data.function.parameter_types)
                      ? call_callee->data.function.parameter_types[a]
                      : NULL;
@@ -3393,7 +3393,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
       }
       fn->has_xmm_arg_call = 1;
       BinaryXmmRegister xreg = locs[a + hidden].xmm_register;
-      Type *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
+      MtlcType *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
                   call_callee->data.function.parameter_types)
                      ? call_callee->data.function.parameter_types[a]
                      : NULL;
@@ -3492,7 +3492,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
         ctx && ctx->function_name
             ? code_generator_find_ir_function_binary(g, ctx->function_name)
             : NULL;
-    Type *ft = mir_indirect_call_type(g, irf, in);
+    MtlcType *ft = mir_indirect_call_type(g, irf, in);
     if (!ft) {
       fn->has_error = 1;
       return 0;
@@ -3502,7 +3502,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
     BinaryArgLocation locs[MIR_MAX_PARAMS];
     int stack_bytes = 0;
     for (size_t a = 0; a < in->argument_count; a++) {
-      Type *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
+      MtlcType *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
       arg_is_float[a] =
           code_generator_binary_resolved_type_float_bits(pt) != 0;
     }
@@ -3569,7 +3569,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
       }
       fn->has_xmm_arg_call = 1;
       BinaryXmmRegister xreg = locs[a].xmm_register;
-      Type *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
+      MtlcType *pt = ft->fn_param_types ? ft->fn_param_types[a] : NULL;
       int pfb = code_generator_binary_resolved_type_float_bits(pt);
       if (pfb != 32 && pfb != 64) {
         pfb = 64;
@@ -3948,16 +3948,16 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
        * declare-external flag for the encoder). The global stays cached; the
        * main loop flushes/reloads address-taken globals around pointer memory
        * ops so the alias and the cache vreg stay coherent. */
-      Symbol *s = g->symbol_table
-                      ? symbol_table_lookup(g->symbol_table, in->lhs.name)
+      const CgSym *s = g->symbol_table
+                      ? code_generator_lookup_symbol(g, in->lhs.name)
                       : NULL;
       int is_extern = (s && s->is_extern) ? 1 : 0;
       return mir_emit1(fn, MIR_LEA_GLOBAL, dst, mir_op_symbol(in->lhs.name),
                        mir_op_none(), 8, is_extern, 0);
     }
     if (ak == MIR_ADDROF_FUNCTION) {
-      Symbol *s = g->symbol_table
-                      ? symbol_table_lookup(g->symbol_table, in->lhs.name)
+      const CgSym *s = g->symbol_table
+                      ? code_generator_lookup_symbol(g, in->lhs.name)
                       : NULL;
       int is_extern = (s && s->is_extern) ? 1 : 0;
       return mir_emit1(fn, MIR_LEA_FUNC, dst, mir_op_symbol(in->lhs.name),
@@ -3977,7 +3977,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * from the IR (function scope has popped from the symbol table by now). */
     {
       int is_param = 0;
-      Type *lt = mir_local_or_param_type(g, irf, in->lhs.name, &is_param);
+      MtlcType *lt = mir_local_or_param_type(g, irf, in->lhs.name, &is_param);
       if (lt && !is_param && code_generator_type_is_aggregate(lt) &&
           code_generator_abi_classify(lt) == ABI_PASS_INDIRECT) {
         size_t sz = code_generator_abi_type_size(lt);
@@ -4836,7 +4836,7 @@ int code_generator_binary_emit_function_via_mir(
   (void)abi;
   for (size_t i = 0; i < function_data->parameter_count; i++) {
     const char *pname = function_data->parameter_names[i];
-    Type *pt = code_generator_binary_get_resolved_type(
+    MtlcType *pt = code_generator_binary_get_resolved_type(
         generator, function_data->parameter_types
                        ? function_data->parameter_types[i]
                        : NULL,
@@ -4871,7 +4871,7 @@ int code_generator_binary_emit_function_via_mir(
    * homes that register into it (shifting user params up one ABI slot) and each
    * RETURN copies the struct there and returns the pointer in RAX. */
   {
-    Type *rt = code_generator_binary_get_resolved_type(
+    MtlcType *rt = code_generator_binary_get_resolved_type(
         generator, function_data->return_type, 1);
     if (rt && code_generator_type_is_aggregate(rt) &&
         code_generator_abi_classify(rt) == ABI_PASS_INDIRECT) {
@@ -4961,7 +4961,7 @@ int code_generator_binary_emit_function_via_mir(
           !mir_name_is_global_scalar(generator, op->name)) {
         continue;
       }
-      Symbol *s = symbol_table_lookup(generator->symbol_table, op->name);
+      const CgSym *s = code_generator_lookup_symbol(generator, op->name);
       int size = s ? code_generator_binary_resolved_type_scalar_size(s->type) : 0;
       if (size != 1 && size != 2 && size != 4 && size != 8) {
         continue;

@@ -493,8 +493,8 @@ int code_generator_binary_parameter_is_indirect(
     return 0;
   }
 
-  Symbol *symbol = generator && generator->symbol_table
-                       ? symbol_table_lookup(generator->symbol_table, name)
+  const CgSym *symbol = generator && generator->symbol_table
+                       ? code_generator_lookup_symbol(generator, name)
                        : NULL;
   if (symbol && symbol->kind == SYMBOL_PARAMETER &&
       symbol->data.variable.is_indirect_param) {
@@ -510,7 +510,7 @@ int code_generator_binary_parameter_is_indirect(
   for (size_t i = 0; i < function_data->parameter_count; i++) {
     const char *parameter_name = function_data->parameter_names[i];
     if (parameter_name && strcmp(parameter_name, name) == 0) {
-      Type *parameter_type = code_generator_binary_get_resolved_type(
+      MtlcType *parameter_type = code_generator_binary_get_resolved_type(
           generator, function_data->parameter_types[i], 0);
       return code_generator_abi_classify(parameter_type) == ABI_PASS_INDIRECT;
     }
@@ -542,8 +542,8 @@ int code_generator_binary_emit_struct_destination_address(
                                    BINARY_GP_RBP, -local_offset);
   }
 
-  Symbol *symbol = generator->symbol_table
-                       ? symbol_table_lookup(generator->symbol_table, name)
+  const CgSym *symbol = generator->symbol_table
+                       ? code_generator_lookup_symbol(generator, name)
                        : NULL;
   if (symbol && symbol->scope && symbol->scope->type == SCOPE_GLOBAL) {
     const char *resolved = code_generator_get_link_symbol_name(generator, name);
@@ -593,7 +593,7 @@ int code_generator_binary_emit_indirect_source_address(
       return binary_emit_lea_reg_mem(&context->code, target_register,
                                      BINARY_GP_RBP, -local_offset);
     }
-    Symbol *symbol = symbol_table_lookup(generator->symbol_table, operand->name);
+    const CgSym *symbol = code_generator_lookup_symbol(generator, operand->name);
     if (!symbol) {
       code_generator_set_error(generator,
                                "Unknown symbol '%s' for indirect call arg",
@@ -705,7 +705,7 @@ int code_generator_binary_emit_rep_movsq(
 
 int code_generator_binary_emit_global_symbol_load(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    const char *symbol_name, Type *type, int declare_external,
+    const char *symbol_name, MtlcType *type, int declare_external,
     BinaryGpRegister target_register) {
   size_t displacement_offset = 0;
   int size = code_generator_binary_resolved_type_scalar_size(type);
@@ -775,7 +775,7 @@ int code_generator_binary_emit_global_symbol_load(
 
 int code_generator_binary_emit_global_symbol_store(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    const char *symbol_name, Type *type, int declare_external,
+    const char *symbol_name, MtlcType *type, int declare_external,
     BinaryGpRegister source_register) {
   size_t displacement_offset = 0;
   int size = code_generator_binary_resolved_type_scalar_size(type);
@@ -834,9 +834,9 @@ int code_generator_binary_emit_global_symbol_store(
 }
 
 static int code_generator_binary_promoted_symbol_is_global(
-    CodeGenerator *generator, const char *name, Symbol **symbol_out) {
-  Symbol *symbol = generator && generator->symbol_table && name
-                       ? symbol_table_lookup(generator->symbol_table, name)
+    CodeGenerator *generator, const char *name, const CgSym **symbol_out) {
+  const CgSym *symbol = generator && generator->symbol_table && name
+                       ? code_generator_lookup_symbol(generator, name)
                        : NULL;
   if (symbol_out) {
     *symbol_out = symbol;
@@ -854,7 +854,7 @@ int code_generator_binary_emit_promoted_global_loads(
     const char *name = context->register_symbols.items[i].name;
     BinaryGpRegister reg =
         (BinaryGpRegister)context->register_symbols.items[i].offset;
-    Symbol *symbol = NULL;
+    const CgSym *symbol = NULL;
     if (!code_generator_binary_promoted_symbol_is_global(generator, name,
                                                          &symbol)) {
       continue;
@@ -887,7 +887,7 @@ int code_generator_binary_emit_promoted_global_stores(
     const char *name = context->register_symbols.items[i].name;
     BinaryGpRegister reg =
         (BinaryGpRegister)context->register_symbols.items[i].offset;
-    Symbol *symbol = NULL;
+    const CgSym *symbol = NULL;
     if (!code_generator_binary_promoted_symbol_is_global(generator, name,
                                                          &symbol)) {
       continue;
@@ -913,7 +913,7 @@ int code_generator_binary_emit_promoted_global_stores(
 int code_generator_binary_operand_is_known_float64(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IROperand *operand) {
-  Symbol *symbol = NULL;
+  const CgSym *symbol = NULL;
 
   if (!context || !operand) {
     return 0;
@@ -931,7 +931,7 @@ int code_generator_binary_operand_is_known_float64(
 
   if (operand->kind == IR_OPERAND_SYMBOL && operand->name && generator &&
       generator->symbol_table) {
-    symbol = symbol_table_lookup(generator->symbol_table, operand->name);
+    symbol = code_generator_lookup_symbol(generator, operand->name);
     return symbol && code_generator_binary_resolved_type_is_float64(symbol->type);
   }
 
@@ -946,7 +946,7 @@ int code_generator_binary_operand_is_known_float64(
 int code_generator_binary_operand_float_bits(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IROperand *operand) {
-  Symbol *symbol = NULL;
+  const CgSym *symbol = NULL;
 
   if (!context || !operand) {
     return 0;
@@ -972,7 +972,7 @@ int code_generator_binary_operand_float_bits(
 
   if (operand->kind == IR_OPERAND_SYMBOL && operand->name && generator &&
       generator->symbol_table) {
-    symbol = symbol_table_lookup(generator->symbol_table, operand->name);
+    symbol = code_generator_lookup_symbol(generator, operand->name);
     if (symbol) {
       return code_generator_binary_resolved_type_float_bits(symbol->type);
     }
@@ -984,8 +984,8 @@ int code_generator_binary_operand_float_bits(
 int code_generator_binary_instruction_result_is_float64(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
-  Symbol *symbol = NULL;
-  Type *function_type = NULL;
+  const CgSym *symbol = NULL;
+  MtlcType *function_type = NULL;
   const char *op = NULL;
 
   if (!context || !instruction) {
@@ -1016,7 +1016,7 @@ int code_generator_binary_instruction_result_is_float64(
      * float64-only predicate here dropped float32 returns to the integer path
      * and lost the value. */
     symbol = generator && generator->symbol_table && instruction->text
-                 ? symbol_table_lookup(generator->symbol_table,
+                 ? code_generator_lookup_symbol(generator,
                                        instruction->text)
                  : NULL;
     return symbol && symbol->kind == SYMBOL_FUNCTION &&
@@ -1027,11 +1027,11 @@ int code_generator_binary_instruction_result_is_float64(
     symbol = generator && generator->symbol_table &&
                      instruction->lhs.kind == IR_OPERAND_SYMBOL &&
                      instruction->lhs.name
-                 ? symbol_table_lookup(generator->symbol_table,
+                 ? code_generator_lookup_symbol(generator,
                                        instruction->lhs.name)
                  : NULL;
     function_type =
-        (symbol && symbol->type && symbol->type->kind == TYPE_FUNCTION_POINTER)
+        (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
             ? symbol->type
             : NULL;
     return code_generator_binary_resolved_type_float_bits(
@@ -1060,8 +1060,8 @@ int code_generator_binary_instruction_result_is_float64(
 int code_generator_binary_instruction_result_float_bits(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
-  Symbol *symbol = NULL;
-  Type *function_type = NULL;
+  const CgSym *symbol = NULL;
+  MtlcType *function_type = NULL;
 
   if (!context || !instruction) {
     return 0;
@@ -1084,7 +1084,7 @@ int code_generator_binary_instruction_result_float_bits(
 
   case IR_OP_CALL:
     symbol = generator && generator->symbol_table && instruction->text
-                 ? symbol_table_lookup(generator->symbol_table,
+                 ? code_generator_lookup_symbol(generator,
                                        instruction->text)
                  : NULL;
     return (symbol && symbol->kind == SYMBOL_FUNCTION)
@@ -1096,11 +1096,11 @@ int code_generator_binary_instruction_result_float_bits(
     symbol = generator && generator->symbol_table &&
                      instruction->lhs.kind == IR_OPERAND_SYMBOL &&
                      instruction->lhs.name
-                 ? symbol_table_lookup(generator->symbol_table,
+                 ? code_generator_lookup_symbol(generator,
                                        instruction->lhs.name)
                  : NULL;
     function_type =
-        (symbol && symbol->type && symbol->type->kind == TYPE_FUNCTION_POINTER)
+        (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
             ? symbol->type
             : NULL;
     return function_type ? code_generator_binary_resolved_type_float_bits(
@@ -1108,8 +1108,8 @@ int code_generator_binary_instruction_result_float_bits(
                          : 64;
 
   case IR_OP_CAST: {
-    Type *t = generator && generator->type_checker
-                  ? type_checker_get_type_by_name(generator->type_checker,
+    MtlcType *t = generator && generator->type_checker
+                  ? code_generator_named_type(generator,
                                                   instruction->text)
                   : NULL;
     return code_generator_binary_resolved_type_float_bits(t);
@@ -1123,7 +1123,7 @@ int code_generator_binary_instruction_result_float_bits(
 
 int code_generator_binary_emit_string_symbol_load(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    const char *symbol_name, const Symbol *symbol,
+    const char *symbol_name, const CgSym *symbol,
     BinaryGpRegister target_register) {
   int offset = 0;
 
@@ -1314,11 +1314,11 @@ int code_generator_binary_emit_operand_load(
   case IR_OPERAND_SYMBOL: {
     const char *alias_target =
         binary_symbol_alias_table_get(&context->symbol_aliases, operand->name);
-    Symbol *symbol = generator && generator->symbol_table
-                         ? symbol_table_lookup(generator->symbol_table,
+    const CgSym *symbol = generator && generator->symbol_table
+                         ? code_generator_lookup_symbol(generator,
                                                operand->name)
                          : NULL;
-    Type *load_type = symbol ? symbol->type
+    MtlcType *load_type = symbol ? symbol->type
                              : code_generator_binary_get_operand_type_in_context(
                                    generator, context, operand);
     int offset = code_generator_binary_get_symbol_offset(context, operand->name);
@@ -1336,7 +1336,7 @@ int code_generator_binary_emit_operand_load(
       return binary_emit_lea_reg_mem(&context->code, target_register,
                                      BINARY_GP_RBP, -offset);
     }
-    if (symbol && symbol->type && symbol->type->kind == TYPE_STRING) {
+    if (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_STRING) {
       return code_generator_binary_emit_string_symbol_load(
           generator, context, operand->name, symbol, target_register);
     }
@@ -1898,9 +1898,9 @@ static int code_generator_binary_emit_realloc_call_inline(
 
 int code_generator_binary_emit_call_argument_load(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    const IROperand *operand, Type *parameter_type,
+    const IROperand *operand, MtlcType *parameter_type,
     BinaryGpRegister target_register) {
-  Type *operand_type = NULL;
+  MtlcType *operand_type = NULL;
 
   if (!generator || !context || !operand) {
     return 0;
@@ -1933,7 +1933,7 @@ int code_generator_binary_emit_call_argument_load(
  * IEEE bits arrive in RAX; movd transfers a single, movq a double. */
 int code_generator_binary_emit_float_call_argument(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    const IROperand *operand, Type *parameter_type, int param_fbits,
+    const IROperand *operand, MtlcType *parameter_type, int param_fbits,
     BinaryXmmRegister xmm_register) {
   /* The argument may be stored at a DIFFERENT precision than the parameter
    * expects. In particular every float binary-op result is tracked as float64
@@ -2001,7 +2001,7 @@ int code_generator_binary_emit_local_string_store(
 }
 
 static int binary_canonicalize_narrow_reg_for_type(
-    BinaryFunctionContext *context, Type *type, BinaryGpRegister reg);
+    BinaryFunctionContext *context, MtlcType *type, BinaryGpRegister reg);
 
 int code_generator_binary_emit_destination_store(
     CodeGenerator *generator, BinaryFunctionContext *context,
@@ -2029,8 +2029,8 @@ int code_generator_binary_emit_destination_store(
   }
 
   case IR_OPERAND_SYMBOL: {
-    Symbol *symbol = generator && generator->symbol_table
-                         ? symbol_table_lookup(generator->symbol_table,
+    const CgSym *symbol = generator && generator->symbol_table
+                         ? code_generator_lookup_symbol(generator,
                                                destination->name)
                          : NULL;
     /* The symbol table has popped function scope by codegen time, so the
@@ -2038,7 +2038,7 @@ int code_generator_binary_emit_destination_store(
      * (function signature + DECLARE_LOCAL). Without it a narrow local's store
      * defaults to 8 bytes, losing the type's truncation semantics (and
      * over-writing a 4-byte stack slot). */
-    Type *dest_type = symbol && symbol->type
+    MtlcType *dest_type = symbol && symbol->type
                           ? symbol->type
                           : code_generator_binary_get_operand_type_in_context(
                                 generator, context, destination);
@@ -2051,7 +2051,7 @@ int code_generator_binary_emit_destination_store(
       return code_generator_binary_emit_local_string_store(
           generator, context, offset, source_register);
     }
-    if (symbol && symbol->type && symbol->type->kind == TYPE_STRING) {
+    if (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_STRING) {
       if (offset <= 0) {
         if (symbol->scope && symbol->scope->type == SCOPE_GLOBAL) {
           code_generator_set_error(
@@ -2187,8 +2187,8 @@ int code_generator_binary_validate_call(CodeGenerator *generator,
     return 0;
   }
 
-  Symbol *symbol = generator->symbol_table
-                       ? symbol_table_lookup(generator->symbol_table,
+  const CgSym *symbol = generator->symbol_table
+                       ? code_generator_lookup_symbol(generator,
                                              instruction->text)
                        : NULL;
   if (!symbol || symbol->kind != SYMBOL_FUNCTION) {
@@ -2214,7 +2214,7 @@ int code_generator_binary_validate_call(CodeGenerator *generator,
   }
 
   for (size_t i = 0; i < symbol->data.function.parameter_count; i++) {
-    Type *parameter_type = symbol->data.function.parameter_types
+    MtlcType *parameter_type = symbol->data.function.parameter_types
                                ? symbol->data.function.parameter_types[i]
                                : NULL;
     if (parameter_type &&
@@ -2487,7 +2487,7 @@ int code_generator_binary_emit_runtime_trap_call(
 int code_generator_binary_emit_address_of(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
-  Symbol *symbol = NULL;
+  const CgSym *symbol = NULL;
   int offset = 0;
   int is_function_symbol = 0;
 
@@ -2501,7 +2501,7 @@ int code_generator_binary_emit_address_of(
   }
 
   symbol = generator->symbol_table
-               ? symbol_table_lookup(generator->symbol_table,
+               ? code_generator_lookup_symbol(generator,
                                      instruction->lhs.name)
                : NULL;
   is_function_symbol =
@@ -2523,7 +2523,7 @@ int code_generator_binary_emit_address_of(
       return 0;
     }
   } else {
-    if (symbol && symbol->type && symbol->type->kind == TYPE_STRING) {
+    if (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_STRING) {
       if (!code_generator_binary_emit_string_symbol_load(
               generator, context, instruction->lhs.name, symbol,
               BINARY_GP_RAX)) {
@@ -2577,7 +2577,7 @@ int code_generator_binary_emit_address_of(
 int code_generator_binary_load_needs_sign_extend(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IROperand *destination, int load_size) {
-  Symbol *symbol = NULL;
+  const CgSym *symbol = NULL;
   (void)context;
 
   if (load_size != 4 || !destination) {
@@ -2586,7 +2586,7 @@ int code_generator_binary_load_needs_sign_extend(
 
   if (destination->kind == IR_OPERAND_SYMBOL && destination->name &&
       generator->symbol_table) {
-    symbol = symbol_table_lookup(generator->symbol_table, destination->name);
+    symbol = code_generator_lookup_symbol(generator, destination->name);
     if (symbol && symbol->type &&
         code_generator_binary_resolved_type_scalar_size(symbol->type) == 4) {
       return code_generator_binary_resolved_type_is_signed_integer(symbol->type);
@@ -2938,7 +2938,7 @@ int code_generator_binary_emit_new(CodeGenerator *generator,
 int code_generator_binary_emit_cast(CodeGenerator *generator,
                                            BinaryFunctionContext *context,
                                            const IRInstruction *instruction) {
-  Type *target_type = NULL;
+  MtlcType *target_type = NULL;
   int target_is_float = 0;
   int target_is_unsigned = 0;
   int target_size = 8;
@@ -2948,19 +2948,19 @@ int code_generator_binary_emit_cast(CodeGenerator *generator,
   }
 
   target_type = generator->type_checker
-                    ? type_checker_get_type_by_name(generator->type_checker,
+                    ? code_generator_named_type(generator,
                                                     instruction->text)
                     : NULL;
   target_is_float =
       target_type ? code_generator_is_floating_point_type(target_type) : 0;
   if (target_type) {
-    target_is_unsigned = target_type->kind == TYPE_UINT8 ||
-                         target_type->kind == TYPE_UINT16 ||
-                         target_type->kind == TYPE_UINT32 ||
-                         target_type->kind == TYPE_UINT64;
+    target_is_unsigned = target_type->kind == MTLC_TYPE_UINT8 ||
+                         target_type->kind == MTLC_TYPE_UINT16 ||
+                         target_type->kind == MTLC_TYPE_UINT32 ||
+                         target_type->kind == MTLC_TYPE_UINT64;
     target_size = (int)target_type->size;
-    if (target_type->kind == TYPE_POINTER ||
-        target_type->kind == TYPE_FUNCTION_POINTER) {
+    if (target_type->kind == MTLC_TYPE_POINTER ||
+        target_type->kind == MTLC_TYPE_FUNCTION_POINTER) {
       target_size = 8;
     }
   }
@@ -3074,8 +3074,8 @@ emit_failure:
 int code_generator_binary_validate_indirect_call(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
-  Symbol *symbol = NULL;
-  Type *function_type = NULL;
+  const CgSym *symbol = NULL;
+  MtlcType *function_type = NULL;
 
   if (!generator || !context || !instruction ||
       instruction->lhs.kind != IR_OPERAND_SYMBOL || !instruction->lhs.name) {
@@ -3083,10 +3083,10 @@ int code_generator_binary_validate_indirect_call(
   }
 
   symbol = generator->symbol_table
-               ? symbol_table_lookup(generator->symbol_table,
+               ? code_generator_lookup_symbol(generator,
                                      instruction->lhs.name)
                : NULL;
-  if (!symbol || !symbol->type || symbol->type->kind != TYPE_FUNCTION_POINTER) {
+  if (!symbol || !symbol->type || symbol->type->kind != MTLC_TYPE_FUNCTION_POINTER) {
     return 1;
   }
 
@@ -3128,7 +3128,7 @@ int code_generator_binary_validate_indirect_call(
 int code_generator_binary_emit_call(CodeGenerator *generator,
                                            BinaryFunctionContext *context,
                                            const IRInstruction *instruction) {
-  Symbol *function_symbol = NULL;
+  const CgSym *function_symbol = NULL;
   IRFunction *target_ir_function = NULL;
 
   if (!generator || !context || !instruction || !instruction->text ||
@@ -3232,7 +3232,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
   }
 
   function_symbol = generator->symbol_table
-                        ? symbol_table_lookup(generator->symbol_table,
+                        ? code_generator_lookup_symbol(generator,
                                               instruction->text)
                         : NULL;
   target_ir_function =
@@ -3259,7 +3259,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
   }
   int indirect_temp_region = 0;
   for (size_t i = 0; i < argument_count; i++) {
-    Type *param_t =
+    MtlcType *param_t =
         function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
                 function_symbol->data.function.parameter_types
             ? function_symbol->data.function.parameter_types[i]
@@ -3278,7 +3278,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
 
   /* INDIRECT-return classification. The hidden out-pointer (Win64: rcx)
    * occupies ABI slot 0 and shifts every user arg up by one. */
-  Type *call_return_type = NULL;
+  MtlcType *call_return_type = NULL;
   if (function_symbol && function_symbol->kind == SYMBOL_FUNCTION) {
     call_return_type = function_symbol->data.function.return_type
                            ? function_symbol->data.function.return_type
@@ -3327,7 +3327,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
     return 0;
   }
   for (size_t i = 0; i < argument_count; i++) {
-    Type *param_t =
+    MtlcType *param_t =
         function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
                 function_symbol->data.function.parameter_types
             ? function_symbol->data.function.parameter_types[i]
@@ -3446,7 +3446,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
       }
       continue;
     }
-    Type *parameter_type =
+    MtlcType *parameter_type =
         function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
                 function_symbol->data.function.parameter_types
             ? function_symbol->data.function.parameter_types[i]
@@ -3489,7 +3489,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
       }
       continue;
     }
-    Type *parameter_type =
+    MtlcType *parameter_type =
         function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
                 function_symbol->data.function.parameter_types
             ? function_symbol->data.function.parameter_types[i]
@@ -3583,8 +3583,8 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
      * downstream IR_OP_ASSIGN / indirect-arg consumption knows the temp
      * carries a pointer-to-struct semantics. */
     if (instruction->dest.kind == IR_OPERAND_SYMBOL && instruction->dest.name) {
-      Symbol *dest_sym =
-          symbol_table_lookup(generator->symbol_table, instruction->dest.name);
+      const CgSym *dest_sym =
+          code_generator_lookup_symbol(generator, instruction->dest.name);
       if (!dest_sym || !dest_sym->type ||
           code_generator_type_is_aggregate(dest_sym->type)) {
         if (!code_generator_binary_emit_struct_destination_address(
@@ -3639,7 +3639,7 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
 
   if (function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
       instruction->dest.kind == IR_OPERAND_TEMP && instruction->dest.name) {
-    Type *ret_type = function_symbol->data.function.return_type;
+    MtlcType *ret_type = function_symbol->data.function.return_type;
     int ret_width = code_generator_binary_type_scalar_width(ret_type);
     int offset =
         code_generator_binary_get_temp_offset(context, instruction->dest.name);
@@ -3699,8 +3699,8 @@ int code_generator_binary_emit_call(CodeGenerator *generator,
 int code_generator_binary_emit_call_indirect(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
-  Symbol *symbol = NULL;
-  Type *function_type = NULL;
+  const CgSym *symbol = NULL;
+  MtlcType *function_type = NULL;
   size_t stack_argument_count = 0;
   int call_stack_total = 0;
 
@@ -3714,11 +3714,11 @@ int code_generator_binary_emit_call_indirect(
   }
 
   symbol = generator->symbol_table
-               ? symbol_table_lookup(generator->symbol_table,
+               ? code_generator_lookup_symbol(generator,
                                      instruction->lhs.name)
                : NULL;
   function_type =
-      (symbol && symbol->type && symbol->type->kind == TYPE_FUNCTION_POINTER)
+      (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
           ? symbol->type
           : NULL;
 
@@ -3738,7 +3738,7 @@ int code_generator_binary_emit_call_indirect(
     return 0;
   }
   for (size_t i = 0; i < indirect_arg_count; i++) {
-    Type *parameter_type = function_type && function_type->fn_param_types
+    MtlcType *parameter_type = function_type && function_type->fn_param_types
                                ? function_type->fn_param_types[i]
                                : NULL;
     arg_is_float[i] =
@@ -3789,7 +3789,7 @@ int code_generator_binary_emit_call_indirect(
     const BinaryArgLocation *loc = &arg_locations[i];
     if (loc->kind != BINARY_ARG_ON_STACK) continue;
     int slot_offset = abi->shadow_space_size + loc->stack_offset;
-    Type *parameter_type =
+    MtlcType *parameter_type =
         function_type && function_type->fn_param_types
             ? function_type->fn_param_types[i]
             : NULL;
@@ -3811,7 +3811,7 @@ int code_generator_binary_emit_call_indirect(
   for (size_t i = 0; i < indirect_arg_count; i++) {
     const BinaryArgLocation *loc = &arg_locations[i];
     if (loc->kind == BINARY_ARG_ON_STACK) continue;
-    Type *parameter_type =
+    MtlcType *parameter_type =
         function_type && function_type->fn_param_types
             ? function_type->fn_param_types[i]
             : NULL;
@@ -4286,7 +4286,7 @@ static int code_generator_binary_symbol_operand_register(
 }
 
 static int binary_canonicalize_narrow_reg_for_type(
-    BinaryFunctionContext *context, Type *type, BinaryGpRegister reg) {
+    BinaryFunctionContext *context, MtlcType *type, BinaryGpRegister reg) {
   if (!context || !type || code_generator_type_is_aggregate(type) ||
       code_generator_binary_resolved_type_float_bits(type) != 0) {
     return 1;
@@ -4315,7 +4315,7 @@ static int binary_canonicalize_narrow_reg_for_type(
 static int binary_canonicalize_narrow_dest_reg(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IROperand *dest, BinaryGpRegister dest_reg) {
-  Type *t = code_generator_binary_get_operand_type_in_context(generator,
+  MtlcType *t = code_generator_binary_get_operand_type_in_context(generator,
                                                               context, dest);
   return binary_canonicalize_narrow_reg_for_type(context, t, dest_reg);
 }
@@ -4335,14 +4335,14 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
      * the signed magic-multiply both assume signed arithmetic (sar, sign-bias).
      * For an unsigned dividend those are wrong on high-bit-set values, so route
      * unsigned constant division to its own magic path (logical shifts, MUL). */
-    Type *dividend_type = code_generator_binary_get_operand_type_in_context(
+    MtlcType *dividend_type = code_generator_binary_get_operand_type_in_context(
         generator, context, &instruction->lhs);
     int dividend_unsigned =
         dividend_type &&
-        (dividend_type->kind == TYPE_UINT8 ||
-         dividend_type->kind == TYPE_UINT16 ||
-         dividend_type->kind == TYPE_UINT32 ||
-         dividend_type->kind == TYPE_UINT64);
+        (dividend_type->kind == MTLC_TYPE_UINT8 ||
+         dividend_type->kind == MTLC_TYPE_UINT16 ||
+         dividend_type->kind == MTLC_TYPE_UINT32 ||
+         dividend_type->kind == MTLC_TYPE_UINT64);
 
     if (dividend_unsigned && instruction->rhs.int_value >= 2) {
       int u_handled = 0;
@@ -4748,14 +4748,14 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
     /* Unsigned dividend: zero-extend into RDX and use DIV, not CQO/IDIV.
      * Applying signed division to a high-bit-set unsigned value gives the wrong
      * quotient and remainder. Signedness is the dividend's declared type. */
-    Type *rt_dividend_type = code_generator_binary_get_operand_type_in_context(
+    MtlcType *rt_dividend_type = code_generator_binary_get_operand_type_in_context(
         generator, context, &instruction->lhs);
     int rt_unsigned =
         rt_dividend_type &&
-        (rt_dividend_type->kind == TYPE_UINT8 ||
-         rt_dividend_type->kind == TYPE_UINT16 ||
-         rt_dividend_type->kind == TYPE_UINT32 ||
-         rt_dividend_type->kind == TYPE_UINT64);
+        (rt_dividend_type->kind == MTLC_TYPE_UINT8 ||
+         rt_dividend_type->kind == MTLC_TYPE_UINT16 ||
+         rt_dividend_type->kind == MTLC_TYPE_UINT32 ||
+         rt_dividend_type->kind == MTLC_TYPE_UINT64);
     if (rt_unsigned) {
       if (!binary_emit_xor_reg_reg32(&context->code, BINARY_GP_RDX) ||
           !binary_emit_div_reg(&context->code, BINARY_GP_R10)) {
@@ -4872,13 +4872,9 @@ int code_generator_binary_emit_binary(CodeGenerator *generator,
     return 0;
   }
 
-  /* MTLC-PHASE2: re-derives Type from the origin AST node; replace with a
-   * baked-in MtlcType on the IR instruction. */
-  Type *result_type = instruction->ast_ref
-                          ? code_generator_infer_expression_type(
-                                generator, instruction->ast_ref)
-                          : NULL;
-  if (result_type && result_type->kind == TYPE_STRING &&
+  /* Result type baked onto the IR at lowering (was: inferred from ast_ref). */
+  const MtlcType *result_type = instruction->value_type;
+  if (result_type && result_type->kind == MTLC_TYPE_STRING &&
       strcmp(instruction->text, "+") == 0) {
     return binary_emit_string_concat(generator, context, instruction);
   }
@@ -5123,7 +5119,7 @@ int code_generator_binary_emit_instruction(
      *     below) memcpys the full struct -- mirrors INDIRECT-return temps.
      *   - dest is an aggregate SYMBOL: memcpy &source -> &dest directly. */
     if (instruction->lhs.kind == IR_OPERAND_SYMBOL && instruction->lhs.name) {
-      Type *src_type = code_generator_binary_get_operand_type_in_context(
+      MtlcType *src_type = code_generator_binary_get_operand_type_in_context(
           generator, context, &instruction->lhs);
       if (src_type && code_generator_type_is_aggregate(src_type)) {
         size_t struct_bytes = code_generator_abi_type_size(src_type);
@@ -5154,7 +5150,7 @@ int code_generator_binary_emit_instruction(
          * (the copy SOURCE itself, in `var copy = orig` layouts). */
         if (struct_bytes != 8 && instruction->dest.kind == IR_OPERAND_SYMBOL &&
             instruction->dest.name) {
-          Symbol *dest_sym = symbol_table_lookup(generator->symbol_table,
+          const CgSym *dest_sym = code_generator_lookup_symbol(generator,
                                                  instruction->dest.name);
           if (!dest_sym || !dest_sym->type ||
               code_generator_type_is_aggregate(dest_sym->type)) {
@@ -5186,7 +5182,7 @@ int code_generator_binary_emit_instruction(
         instruction->dest.name) {
       size_t bytes = binary_indirect_temp_get(context, instruction->lhs.name);
       if (bytes > 0) {
-        Symbol *dest_sym = symbol_table_lookup(generator->symbol_table,
+        const CgSym *dest_sym = code_generator_lookup_symbol(generator,
                                                instruction->dest.name);
         if (!dest_sym || !dest_sym->type ||
             code_generator_type_is_aggregate(dest_sym->type)) {
@@ -5229,7 +5225,7 @@ int code_generator_binary_emit_instruction(
       BinaryGpRegister assign_dest_reg = BINARY_GP_RAX;
       if (code_generator_binary_symbol_assigned_register(
               generator, context, instruction->dest.name, &assign_dest_reg)) {
-        Type *assign_dest_type =
+        MtlcType *assign_dest_type =
             code_generator_binary_get_operand_type_in_context(
                 generator, context, &instruction->dest);
         int dest_scalar_width =
@@ -5238,10 +5234,10 @@ int code_generator_binary_emit_instruction(
             code_generator_binary_type_is_cstring(assign_dest_type) ||
             binary_named_slot_table_get_offset(&context->cstring_symbols,
                                                instruction->dest.name) >= 0;
-        Type *effective_dest_type =
+        MtlcType *effective_dest_type =
             assign_dest_type ? assign_dest_type
                              : (generator->type_checker
-                                    ? generator->type_checker->builtin_cstring
+                                    ? code_generator_named_type(generator, "cstring")
                                     : NULL);
         int assign_ok = 0;
         int assign_canonicalized = 0;
@@ -5281,7 +5277,7 @@ int code_generator_binary_emit_instruction(
       }
     }
 
-    Type *assign_dest_type =
+    MtlcType *assign_dest_type =
         code_generator_binary_get_operand_type(generator, &instruction->dest);
     int dest_is_cstring =
         code_generator_binary_type_is_cstring(assign_dest_type) ||
@@ -5289,10 +5285,10 @@ int code_generator_binary_emit_instruction(
          binary_named_slot_table_get_offset(&context->cstring_symbols,
                                             instruction->dest.name) >= 0);
     if (dest_is_cstring) {
-      Type *effective_dest_type =
+      MtlcType *effective_dest_type =
           assign_dest_type ? assign_dest_type
                            : (generator->type_checker
-                                  ? generator->type_checker->builtin_cstring
+                                  ? code_generator_named_type(generator, "cstring")
                                   : NULL);
       if (!code_generator_binary_emit_call_argument_load(
               generator, context, &instruction->lhs, effective_dest_type,
@@ -5465,7 +5461,7 @@ int code_generator_binary_emit_instruction(
      * that garbage. Zero-extend unsigned / sign-extend signed. */
     if (instruction->lhs.kind != IR_OPERAND_NONE && !instruction->is_float &&
         context->function_data) {
-      Type *ret_type = code_generator_binary_get_resolved_type(
+      MtlcType *ret_type = code_generator_binary_get_resolved_type(
           generator, context->function_data->return_type, 1);
       if (ret_type && !code_generator_type_is_aggregate(ret_type) &&
           code_generator_binary_resolved_type_float_bits(ret_type) == 0) {

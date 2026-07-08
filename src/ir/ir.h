@@ -426,6 +426,10 @@ typedef struct {
   MtlcType *return_type;    /* borrowed */
   MtlcType **param_types;   /* owned array of borrowed ptrs, or NULL */
   size_t param_count;
+  /* Opaque per-symbol cache for a backend consumer (the code generator builds a
+   * frontend-shaped view here on first lookup). Owned by whoever sets it; the IR
+   * frees it with a plain free() on destroy. */
+  void *codegen_view;
 } IRModuleSymbol;
 
 typedef struct {
