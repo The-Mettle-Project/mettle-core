@@ -5325,7 +5325,7 @@ catch {
 $total++
 try {
   $arm64Exe = "bin\arm64_encode_test.exe"
-  & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc tests\arm64_encode_test.c src\codegen\binary\arm64_encode.c src\codegen\binary\arm64_disasm.c src\codegen\binary\arm64_abi.c -o $arm64Exe
+  & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc -Iinclude tests\arm64_encode_test.c src\codegen\binary\arm64_encode.c src\codegen\binary\arm64_disasm.c src\codegen\binary\arm64_abi.c -o $arm64Exe
   if ($LASTEXITCODE -ne 0) {
     throw "Failed to compile AArch64 encoder test"
   }
@@ -5357,7 +5357,7 @@ catch {
 $total++
 try {
   $arm64EmitExe = "bin\arm64_emit_test.exe"
-  & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc tests\arm64_emit_test.c src\codegen\binary\arm64_encode.c src\codegen\binary\arm64_emit.c src\codegen\binary\arm64_disasm.c src\codegen\binary\arm64_mir_encode.c -o $arm64EmitExe
+  & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc -Iinclude tests\arm64_emit_test.c src\codegen\binary\arm64_encode.c src\codegen\binary\arm64_emit.c src\codegen\binary\arm64_disasm.c src\codegen\binary\arm64_mir_encode.c -o $arm64EmitExe
   if ($LASTEXITCODE -ne 0) {
     throw "Failed to compile AArch64 emit test"
   }
@@ -5621,7 +5621,7 @@ catch {
 try {
   $total++
   $iceExe = Join-Path $tmpDir "compiler_ice_report_test.exe"
-  $iceCompile = & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc tests\compiler_ice_report_test.c src\common.c src\lexer\lexer.c src\compiler\compiler_context.c src\compiler\compiler_crash.c src\runtime\crash_handler.c src\ir\ir.c -o $iceExe -ldbghelp 2>&1 | Out-String
+  $iceCompile = & gcc -Wall -Wextra -std=c99 -g -O0 -Isrc -Iinclude tests\compiler_ice_report_test.c src\common.c src\lexer\lexer.c src\compiler\compiler_context.c src\compiler\compiler_crash.c src\runtime\crash_handler.c src\ir\ir.c -o $iceExe -ldbghelp 2>&1 | Out-String
   if ($LASTEXITCODE -ne 0) {
     throw "compiler ICE report harness compile failed: $iceCompile"
   }
