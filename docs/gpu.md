@@ -1,10 +1,13 @@
 # GPU Offload
 
-Mettle can compile functions to **NVIDIA PTX** and run them on the GPU through
-the CUDA Driver API, with no `nvcc`, no `cudart`, and no LLVM. Kernels are
-written in Mettle, compiled to a `.ptx` module with `--emit-ptx`, and launched
-from a normal Mettle host program via the [`std/gpu`](standard-library.md#stdgpu)
-bindings and the `dispatch` statement.
+libmtlc has two GPU code generators, **NVIDIA PTX** and **SPIR-V** (OpenCL),
+both emitted from the same IR with no `nvcc`, no `cudart`, and no LLVM. Through
+the reference frontend, kernels are written in Mettle, compiled to a `.ptx`
+module with `--emit-ptx` (or a `.spv` module with `--emit-spirv`), and, for the
+CUDA path, launched from a normal Mettle host program via the
+[`std/gpu`](standard-library.md#stdgpu) bindings and the `dispatch` statement.
+(A frontend driving libmtlc directly reaches the same generators through
+`mtlc_emit`; see [Writing a frontend for libmtlc](embedding.md).)
 
 The model is **two-stage and explicit**: kernels live in their own file, the
 host manages device memory itself, and `dispatch` only performs the launch. This
@@ -109,7 +112,7 @@ dispatch KERNEL[grid, block](arg0, arg1, ...);
 - `grid` and `block` are integer expressions: the number of blocks and the
   number of threads per block (1-D).
 - The arguments are passed by value. Device pointers are `int64` handles; scalars
-  (`int32`, `float32`, …) are forwarded with their natural width.
+  (`int32`, `float32`, ...) are forwarded with their natural width.
 
 `dispatch` desugars to argument marshalling plus a call to `gpu_launch`, which
 issues `cuLaunchKernel` and then `cuCtxSynchronize`. It is **launch-only**:
@@ -136,27 +139,28 @@ the PTX to SASS for the installed GPU.
 The same kernels compile to **SPIR-V** with `--emit-spirv`, targeting the
 OpenCL 1.2 execution environment (Physical64 addressing, the `Kernel`
 capability, the OpenCL memory model). This is the flavor that fits Mettle's
-kernel ABI unchanged — kernels take raw typed pointers and do pointer
-arithmetic + loads/stores, which is the OpenCL/CUDA model, not the Vulkan
-descriptor-buffer model:
+kernel ABI unchanged: kernels take raw typed pointers and do pointer arithmetic
+plus loads/stores, which is the OpenCL/CUDA model, not the Vulkan
+descriptor-buffer model.
 
 ```bash
 mettle --emit-spirv kernels.mettle -o kernels.spv
 ```
 
-The output is a binary SPIR-V module (one `OpEntryPoint … Kernel` per kernel)
+The output is a binary SPIR-V module (one `OpEntryPoint ... Kernel` per kernel)
 that an OpenCL runtime consumes with `clCreateProgramWithIL`. The same source
-constructs as the PTX path are supported — arithmetic, comparisons, `if`/`while`
+constructs as the PTX path are supported: arithmetic, comparisons, `if`/`while`
 (including `&&`/`||` and nesting), pointer indexing, casts, the `gpu_*` index
-built-ins (mapped to the OpenCL work-item built-ins: `thread`→`LocalInvocationId`,
-`block`→`WorkgroupId`, `block_dim`→`WorkgroupSize`, `grid_dim`→`NumWorkgroups`),
-`gpu_barrier()` (→ `OpControlBarrier`), the f32 math intrinsics (→ `OpExtInst`
-`OpenCL.std`), `h2f`/`f2h`, and the unsigned atomics.
+built-ins (mapped to the OpenCL work-item built-ins, so `thread` reads
+`LocalInvocationId`, `block` reads `WorkgroupId`, `block_dim` reads
+`WorkgroupSize`, and `grid_dim` reads `NumWorkgroups`), `gpu_barrier()` (an
+`OpControlBarrier`), the f32 math intrinsics (an `OpExtInst` from `OpenCL.std`),
+`h2f`/`f2h`, and the unsigned atomics.
 
 Control flow maps directly onto SPIR-V basic blocks (`OpBranch` /
-`OpBranchConditional`), exactly as the PTX path maps it onto `bra`: SPIR-V's
+`OpBranchConditional`), exactly as the PTX path maps it onto `bra`. SPIR-V's
 structured-control-flow rules (`OpSelectionMerge`/`OpLoopMerge`) are mandated
-only by the `Shader` capability — `Kernel` (OpenCL) modules may branch freely,
+only by the `Shader` capability, so `Kernel` (OpenCL) modules may branch freely,
 which `spirv-val --target-env opencl1.2` confirms.
 
 ## Notes and limits

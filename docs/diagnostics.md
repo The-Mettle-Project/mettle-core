@@ -1,9 +1,13 @@
 # Diagnostics
 
-Mettle reports compile problems with rustc-style rich diagnostics: a stable
-error code, the source snippet with the offending range underlined, an inline
-label saying what was expected, attached notes pointing at related code, and a
-concrete `help:` suggestion.
+libmtlc ships a frontend-neutral diagnostics reporter (`src/error`): it renders
+compile problems against raw source text and source positions, with rustc-style
+rich output, a stable error code, the source snippet with the offending range
+underlined, an inline label saying what was expected, attached notes pointing at
+related code, and a concrete `help:` suggestion. It knows nothing about any AST,
+so the Mettle frontend and the backend (for example the compile-time
+interpreter) both report through it. The examples below are from the Mettle
+frontend.
 
 ```
 error[E0003]: Function 'add' expects 2 arguments, got 3

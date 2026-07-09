@@ -1,9 +1,9 @@
-# calc — a second frontend for libmtlc
+# calc: a second frontend for libmtlc
 
 `calc` is a tiny C-like language with its own compiler in a single file,
 [`calc.c`](calc.c). It exists to demonstrate one thing: **libmtlc is a
 frontend-agnostic backend.** `calc` is not Mettle and shares no code with the
-Mettle frontend — it is a self-contained lexer + recursive-descent parser that
+Mettle frontend. It is a self-contained lexer + recursive-descent parser that
 lowers straight into libmtlc's IR through the public API and drives the backend
 all the way to a native executable.
 
@@ -58,17 +58,17 @@ Then compile a `.calc` program to a native binary and run it:
 
 ## What actually happens
 
-`calc.c` walks its parse and calls the builder as it goes —
-`mtlc_builder_function`, `mtlc_local`, `mtlc_binary`, `mtlc_call`,
-`mtlc_branch_if_zero`, `mtlc_return`, … — then hands the finished module to the
-backend:
+`calc.c` walks its parse and calls the builder as it goes
+(`mtlc_builder_function`, `mtlc_local`, `mtlc_binary`, `mtlc_call`,
+`mtlc_branch_if_zero`, `mtlc_return`, and so on), then hands the finished module
+to the backend:
 
 ```c
-mtlc_optimize(ctx, module);              // classical optimizer (fold, inline, …)
+mtlc_optimize(ctx, module);              // classical optimizer (fold, inline, ...)
 mtlc_build_executable(ctx, module, out); // native x86-64 codegen + internal PE link
 ```
 
-Everything after `mtlc_builder_finish` — optimization, register allocation,
-instruction selection/encoding, and (on Windows) linking a PE executable with
-no external toolchain — is libmtlc doing exactly what it does for the Mettle
+Everything after `mtlc_builder_finish` (optimization, register allocation,
+instruction selection/encoding, and on Windows linking a PE executable with no
+external toolchain) is libmtlc doing exactly what it does for the Mettle
 frontend, driven here by a completely different language.

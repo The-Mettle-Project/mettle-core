@@ -4,7 +4,7 @@ The standard library lives under `stdlib/`. Modules are imported by path. The `s
 
 ## Platform Support
 
-The compiler and most stdlib modules work on Linux and Windows. The compiler emits `elf64` assembly on Linux and `win64` on Windows. Use `make` to build the compiler on Linux and macOS; use `build.bat` on Windows.
+The compiler and most stdlib modules work on Linux and Windows. libmtlc emits native `elf64` objects on Linux and `win64` (COFF) objects on Windows, with no external assembler. Use `make` to build the toolchain on Linux and macOS; use `build.bat` on Windows.
 
 **Cross-platform modules:** `std/io`, `std/mem`, `std/math`, `std/conv`, and `std/process` use the C runtime and work on both Linux and Windows.
 

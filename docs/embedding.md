@@ -1,14 +1,14 @@
 # Writing a frontend for libmtlc
 
 libmtlc is a standalone compiler backend. Any frontend can lower its own
-language into libmtlc's IR and drive the pipeline — custom IR, the classical +
+language into libmtlc's IR and drive the pipeline (custom IR, the classical +
 GNN optimizers, native x86-64 / ARM64 / PTX / SPIR-V codegen, and native PE/ELF
-linking — through the public C API in [`include/mtlc/`](../include/mtlc). Your
+linking) through the public C API in [`include/mtlc/`](../include/mtlc). Your
 frontend includes only those headers and links only `bin/mtlc.lib` (Windows) or
 `bin/libmtlc.a` (Linux). It never touches a backend-internal header.
 
 The reference Mettle frontend is one consumer; [`examples/calc`](../examples/calc)
-is a second, deliberately unrelated one — a tiny C-like language in a single
+is a second, deliberately unrelated one: a tiny C-like language in a single
 file. This document walks the same path.
 
 Self-containment is audited, not assumed: the test suite computes the
@@ -75,7 +75,7 @@ mtlc_optimize(ctx, module);
 ## 3. Emit code
 
 Emit a relocatable object, or go all the way to a native executable (on Windows
-this uses libmtlc's own internal PE linker — no external toolchain):
+this uses libmtlc's own internal PE linker, with no external toolchain):
 
 ```c
 mtlc_build_executable(ctx, module, "a.exe");   /* or mtlc_emit_object(ctx, module, "a.o") */
@@ -97,11 +97,12 @@ cc -Iinclude my_frontend.c bin/libmtlc.a -o my_frontend
 ## Scope of the builder today
 
 `mtlc/build.h` covers the imperative core a real language needs: functions
-(including `extern` declarations resolved at link time — libc works), module
+(including `extern` declarations resolved at link time, so libc works), module
 globals with initializers, parameters, locals, assignment, integer/float
-arithmetic and comparisons, casts (including int↔pointer), pointer types
-(`mtlc_type_pointer`), memory (`mtlc_load` / `mtlc_store` / `mtlc_address_of`
-— array indexing is pointer arithmetic), calls, and label/branch control flow.
+arithmetic and comparisons, casts (including int/pointer conversions), pointer
+types (`mtlc_type_pointer`), memory (`mtlc_load` / `mtlc_store` /
+`mtlc_address_of`, with array indexing as pointer arithmetic), calls, and
+label/branch control flow.
 The `public_api` test gate exercises every one of those against all four
 targets. Struct/aggregate *layout helpers* are the one construct not yet
 wrapped (the `MtlcType` fields for them are public; field access is
@@ -118,7 +119,7 @@ base-pointer + offset arithmetic today); wrapping them is additive.
 | `MTLC_ARCH_PTX` | NVIDIA PTX module (text) |
 | `MTLC_ARCH_SPIRV` | SPIR-V binary module (OpenCL 1.2) |
 
-The ARM64/PTX/SPIR-V paths consume the unoptimized IR shape — emit before
+The ARM64/PTX/SPIR-V paths consume the unoptimized IR shape, so emit before
 calling `mtlc_optimize` on that module.
 
 See also: [compilation pipeline](compilation.md), [GPU offload](gpu.md).

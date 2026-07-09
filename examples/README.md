@@ -1,6 +1,17 @@
-# Mettle examples
+# Examples
 
-Runnable programs demonstrating the language and serving as the runtime benchmark suite.
+Runnable programs for the two halves of the repo. Most are written in the Mettle
+reference frontend and double as the runtime benchmark suite; [`calc/`](calc/)
+is a second, non-Mettle frontend that drives the libmtlc backend directly through
+its public API.
+
+## A second frontend for libmtlc
+
+[`calc/`](calc/) is a tiny C-like language whose entire compiler is one file. It
+uses only the public headers in [`include/mtlc/`](../include/mtlc/) and links
+only the library, lowering its own parse into libmtlc IR and compiling it to a
+native executable. See [`calc/README.md`](calc/README.md) and
+[docs/embedding.md](../docs/embedding.md).
 
 ## Benchmark examples
 
@@ -61,7 +72,7 @@ Run a single suite:
 
 ## Mettle vs Rust demo
 
-[`mettle_vs_rust/`](mettle_vs_rust/) — single workload in Mettle and Rust with a script that compares **compile time**, **binary size**, and **runtime** side by side. Run `examples\mettle_vs_rust\build.bat`.
+[`mettle_vs_rust/`](mettle_vs_rust/): a single workload in Mettle and Rust with a script that compares **compile time**, **binary size**, and **runtime** side by side. Run `examples\mettle_vs_rust\build.bat`.
 
 ## Other examples
 
@@ -71,7 +82,7 @@ Run a single suite:
 | [`hexdump/`](hexdump/) | Hex dump utility |
 | [`ui_demo/`](ui_demo/) | Win32 UI demo (`std/ui`); see [ui_demo/README.md](ui_demo/README.md) |
 | [`tracy_demo/`](tracy_demo/) | Tracy profiler demo (`std/tracy`); see [tracy_demo/README.md](tracy_demo/README.md) |
-| [`gpu_vadd/`](gpu_vadd/) | GPU offload demo: a `kernel` compiled to PTX and launched with `dispatch` (`std/gpu`); see [docs/gpu.md](../docs/gpu.md) |
+| [`gpu_vadd/`](gpu_vadd/) | GPU offload demo: a `kernel` compiled to PTX (or SPIR-V with `--emit-spirv`) and launched with `dispatch` (`std/gpu`); see [docs/gpu.md](../docs/gpu.md) |
 | [`guessing-game/`](guessing-game/) | Simple interactive game |
 | [`direct_object_smoke/`](direct_object_smoke/) | Direct object backend smoke test |
 
