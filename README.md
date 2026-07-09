@@ -86,7 +86,7 @@ bash tools/test-elf-native.sh
 
 ## Docs
 
-[Language](docs/LANGUAGE.md) · [Compilation](docs/compilation.md) · [ML-opt](docs/ml-opt.md) · [GPU](docs/gpu.md) · [Borrow checker](docs/borrow-checker.md) · [C interop](docs/c-interop.md) · [Limitations](docs/known-limitations.md) · [Contributing](CONTRIBUTING.md)
+[libmtlc reference](docs/libmtlc/README.md) · [Write a frontend](docs/embedding.md) · [Language](docs/LANGUAGE.md) · [Compilation](docs/compilation.md) · [ML-opt](docs/ml-opt.md) · [GPU](docs/gpu.md) · [Borrow checker](docs/borrow-checker.md) · [C interop](docs/c-interop.md) · [Limitations](docs/known-limitations.md) · [Contributing](CONTRIBUTING.md)
 
 ## License
 

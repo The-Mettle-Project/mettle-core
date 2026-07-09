@@ -17,6 +17,12 @@ references a driver/frontend symbol it doesn't define (`libmtlc_selfcontained`
 gate), and builds+runs the calc example against the library alone
 (`calc_frontend` gate).
 
+This page is the tutorial. The full backend reference lives in
+[`docs/libmtlc/`](libmtlc/README.md): the [API contract for every
+function](libmtlc/api.md), [the IR model](libmtlc/ir.md), [the type
+system](libmtlc/types.md), [the pipeline and per-target
+limits](libmtlc/pipeline.md), and [internals](libmtlc/internals.md).
+
 ## The public surface
 
 | Header | What it gives you |

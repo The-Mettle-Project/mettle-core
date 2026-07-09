@@ -6,28 +6,40 @@ same way.
 
 ## The backend: libmtlc
 
-libmtlc owns the IR, the optimizers, code generation for four targets, and
-linking. Any frontend can build IR and drive it through the public C API in
-[`include/mtlc/`](../include/mtlc/).
+libmtlc owns the IR, the optimizers, code generation for four targets (x86-64
+with AVX2, ARM64, NVIDIA PTX, SPIR-V), and linking. Any frontend can build IR
+and drive it through the public C API in [`include/mtlc/`](../include/mtlc/).
 
-- [**Writing a frontend for libmtlc**](embedding.md): the public API end to
-  end (build IR, optimize, emit code, link). Start here to use the backend.
-- [Compilation](compilation.md): the pipeline, the `mettle` driver, and its
-  compiler options.
-- [Linker and build pipelines](linker-build-pipelines.md): the native PE/ELF
-  linker and how objects become executables.
-- [GPU offload](gpu.md): the PTX and SPIR-V targets.
-- [ML-driven IR optimization](ml-opt.md): the GNN optimizer.
-- [Translation validation](translation-validation.md): the per-pass
-  correctness gate (`--verify`).
-- [Profile-guided optimization](pgo.md): zero-run PGO (`--pgo`).
-- [Runtime model](runtime-model.md): what libmtlc-emitted programs assume of
-  the OS, and the two opt-in helper objects.
+**The [libmtlc reference](libmtlc/README.md)** is the backend's own
+documentation set:
+
+- [Getting started](embedding.md): the tutorial (build IR, optimize, emit,
+  link) with a complete non-Mettle example.
+- [API reference](libmtlc/api.md): every public function, with ownership,
+  lifetime, error, and thread-safety contracts.
+- [The IR model](libmtlc/ir.md): values, instructions, control-flow rules,
+  module tables, and per-consumer IR shape requirements.
+- [The type system](libmtlc/types.md): `MtlcType` kinds, layout, canonical
+  constructors, and the immortality contract.
+- [The pipeline](libmtlc/pipeline.md): the optimizer pass families, the
+  ML-opt validation gate, each code generator's product and limits, linking.
+- [Internals](libmtlc/internals.md): source layout, self-containment
+  invariants, and how to extend the backend.
+
+Driver-facing views of the same machinery:
+
+- [Compilation](compilation.md): the `mettle` driver and its options.
+- [Linker and build pipelines](linker-build-pipelines.md): which linker runs
+  for each `--build` combination.
+- [GPU offload](gpu.md): the PTX and SPIR-V targets from Mettle source.
+- [ML-driven IR optimization](ml-opt.md), [Translation
+  validation](translation-validation.md), [Profile-guided
+  optimization](pgo.md): `--ml-opt`, `--verify`, `--pgo`.
+- [Runtime model](runtime-model.md): what emitted programs assume of the OS.
 - [Diagnostics](diagnostics.md): the frontend-neutral diagnostics reporter.
 
-The four code-generation targets are x86-64 (with AVX2), ARM64, NVIDIA PTX, and
-SPIR-V (OpenCL). A second, non-Mettle frontend that exercises the whole public
-API lives in [`examples/calc`](../examples/calc).
+A second, non-Mettle frontend that exercises the whole public API lives in
+[`examples/calc`](../examples/calc).
 
 ## The reference frontend: the Mettle language
 
