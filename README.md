@@ -30,10 +30,27 @@ No VM. Hand-encoded ISA. Own PE linker on Windows. Backend never includes fronte
 
 ## Pipeline
 
-```
-your frontend                         libmtlc
-source → parse / typecheck / lower → IR → classical opt → optional GNN ML-opt
-                                          → codegen → link (PE / ELF)
+```mermaid
+flowchart LR
+  source[Source] --> frontend[Parse / typecheck / lower]
+  frontend --> ir[IR]
+  ir --> opt[Classical opt]
+  opt --> ml[GNN ML-opt]
+  ml --> codegen[Codegen]
+  codegen --> link[Link PE / ELF]
+
+  subgraph frontend_side [Your frontend]
+    source
+    frontend
+  end
+
+  subgraph backend [libmtlc]
+    ir
+    opt
+    ml
+    codegen
+    link
+  end
 ```
 
 ## Quick start
