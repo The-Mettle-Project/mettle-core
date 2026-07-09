@@ -85,6 +85,13 @@ typedef struct MtlcType {
  * filling an MtlcType you own, or with mtlc_type_pointer below. */
 const MtlcType *mtlc_type_scalar(MtlcTypeKind kind);
 
+/* Canonical pointer-to-`base` descriptor. Interned and immortal like
+ * mtlc_type_scalar: calling it twice with the same base returns the same
+ * pointer, and the result never needs freeing. `base` must itself be a
+ * canonical descriptor (from mtlc_type_scalar or mtlc_type_pointer), so
+ * pointer-to-pointer chains work. Returns NULL on NULL base or OOM. */
+const MtlcType *mtlc_type_pointer(const MtlcType *base);
+
 /* Queries used across the backend. Implemented in src/ir/mtlc_type.c. */
 int mtlc_type_is_integer(const MtlcType *t);
 int mtlc_type_is_unsigned(const MtlcType *t);

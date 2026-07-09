@@ -46,7 +46,11 @@ CODEGEN_SOURCES = \
 	$(SRCDIR)/codegen/spirv_emitter.c \
 	$(wildcard $(SRCDIR)/codegen/binary/*.c)
 LINKER_SOURCES = $(wildcard $(SRCDIR)/linker/*.c)
-ERROR_SOURCES = $(SRCDIR)/error/error_reporter.c $(SRCDIR)/error/error_explain.c
+# error_reporter.c is frontend-NEUTRAL (renders against raw source text +
+# SourceLocation; no AST) and the backend's comptime interpreter reports
+# through it, so it belongs to libmtlc. error_explain.c stays driver-side.
+DIAG_SOURCES = $(SRCDIR)/error/error_reporter.c
+ERROR_SOURCES = $(SRCDIR)/error/error_explain.c
 DEBUG_SOURCES = $(SRCDIR)/debug/debug_info.c
 COMPILER_SOURCES = $(SRCDIR)/compiler/compiler_context.c $(SRCDIR)/compiler/compiler_crash.c
 COMMON_SOURCES = $(SRCDIR)/common.c
@@ -54,7 +58,7 @@ MAIN_SOURCES = $(SRCDIR)/main.c $(SRCDIR)/tracy_build.c
 
 # libmtlc: the standalone, frontend-agnostic backend (IR core, optimizer + GNN,
 # code generators, native linker, public API).
-BACKEND_SOURCES = $(COMMON_SOURCES) $(IR_CORE_SOURCES) $(CODEGEN_SOURCES) $(LINKER_SOURCES) $(DEBUG_SOURCES) $(COMPILER_SOURCES) $(API_SOURCES)
+BACKEND_SOURCES = $(COMMON_SOURCES) $(IR_CORE_SOURCES) $(CODEGEN_SOURCES) $(LINKER_SOURCES) $(DEBUG_SOURCES) $(DIAG_SOURCES) $(COMPILER_SOURCES) $(API_SOURCES)
 # The reference frontend / driver that consumes libmtlc.
 FRONTEND_SOURCES = $(LEXER_SOURCES) $(PARSER_SOURCES) $(SEMANTIC_SOURCES) $(LOWERING_SOURCES) $(FRONTEND_ADAPTER_SOURCES) $(ERROR_SOURCES) $(MAIN_SOURCES)
 

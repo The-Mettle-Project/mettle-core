@@ -11,6 +11,12 @@ The reference Mettle frontend is one consumer; [`examples/calc`](../examples/cal
 is a second, deliberately unrelated one — a tiny C-like language in a single
 file. This document walks the same path.
 
+Self-containment is audited, not assumed: the test suite computes the
+archive's external-symbol closure with `nm` and fails if any lib member
+references a driver/frontend symbol it doesn't define (`libmtlc_selfcontained`
+gate), and builds+runs the calc example against the library alone
+(`calc_frontend` gate).
+
 ## The public surface
 
 | Header | What it gives you |
@@ -90,12 +96,29 @@ cc -Iinclude my_frontend.c bin/libmtlc.a -o my_frontend
 
 ## Scope of the builder today
 
-`mtlc/build.h` covers the imperative scalar core: functions, parameters, `var`
-locals, assignment, integer/float arithmetic and comparisons, calls, and label
-/ branch control flow — enough for a real language (see `examples/calc`).
-Pointers, arrays, and aggregates exist in `MtlcType` and the IR, but the builder
-does not yet expose load/store/GEP-style helpers for them; a frontend that needs
-those constructs today drops to the IR directly. Extending the builder to cover
-them is additive and does not change the surface above.
+`mtlc/build.h` covers the imperative core a real language needs: functions
+(including `extern` declarations resolved at link time — libc works), module
+globals with initializers, parameters, locals, assignment, integer/float
+arithmetic and comparisons, casts (including int↔pointer), pointer types
+(`mtlc_type_pointer`), memory (`mtlc_load` / `mtlc_store` / `mtlc_address_of`
+— array indexing is pointer arithmetic), calls, and label/branch control flow.
+The `public_api` test gate exercises every one of those against all four
+targets. Struct/aggregate *layout helpers* are the one construct not yet
+wrapped (the `MtlcType` fields for them are public; field access is
+base-pointer + offset arithmetic today); wrapping them is additive.
+
+## Targets through the public API
+
+`mtlc_emit(ctx, module, arch, path)` reaches every backend:
+
+| `MtlcArch` | Product |
+|---|---|
+| `MTLC_ARCH_X86_64` | host-format relocatable object (or `mtlc_build_executable` for a linked binary) |
+| `MTLC_ARCH_ARM64` | self-contained static AArch64 ELF executable |
+| `MTLC_ARCH_PTX` | NVIDIA PTX module (text) |
+| `MTLC_ARCH_SPIRV` | SPIR-V binary module (OpenCL 1.2) |
+
+The ARM64/PTX/SPIR-V paths consume the unoptimized IR shape — emit before
+calling `mtlc_optimize` on that module.
 
 See also: [compilation pipeline](compilation.md), [GPU offload](gpu.md).

@@ -3,7 +3,6 @@
 #endif
 #include "error_reporter.h"
 #include "../common.h"
-#include "../parser/ast.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>

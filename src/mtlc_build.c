@@ -38,15 +38,66 @@ struct MtlcFn {
   size_t value_count, value_capacity;
 };
 
+/* A module-level global variable declaration. */
+typedef struct {
+  char *name;
+  const MtlcType *type;
+  long long init_value;
+  int is_extern;
+} GlobalDecl;
+
 struct MtlcBuilder {
   IRProgram *program;  /* owned until finish */
   MtlcFn **fns;        /* body builders (non-extern), owned */
   size_t fn_count, fn_capacity;
   FnDecl *decls;       /* every declaration, owned */
   size_t decl_count, decl_capacity;
+  GlobalDecl *globals; /* module globals, owned */
+  size_t global_count, global_capacity;
+  /* every distinct MtlcType* that passed through the builder API, registered
+   * by name into the module type registry at finish so codegen can resolve
+   * any type NAME the IR carries (parameter types, DECLARE_LOCAL/CAST text) */
+  const MtlcType **seen_types;
+  size_t seen_count, seen_capacity;
   int temp_counter;
   int error;
 };
+
+/* The parseable NAME of a type: its canonical name when set (scalars carry
+ * "int64", interned pointers carry "int64*"), else the kind name. */
+static const char *type_name(const MtlcType *t) {
+  if (!t) {
+    return "int64";
+  }
+  return t->name ? t->name : mtlc_type_kind_name(t->kind);
+}
+
+static void record_type(MtlcBuilder *b, const MtlcType *t) {
+  if (!b || !t) {
+    return;
+  }
+  for (size_t i = 0; i < b->seen_count; i++) {
+    if (b->seen_types[i] == t) {
+      return;
+    }
+  }
+  if (b->seen_count == b->seen_capacity) {
+    size_t next = b->seen_capacity ? b->seen_capacity * 2 : 16;
+    const MtlcType **grown =
+        realloc(b->seen_types, next * sizeof(*b->seen_types));
+    if (!grown) {
+      b->error = 1;
+      return;
+    }
+    b->seen_types = grown;
+    b->seen_capacity = next;
+  }
+  b->seen_types[b->seen_count++] = t;
+  /* pointer chains: seeing "int64*" implies "int64" should resolve too */
+  if (t->base_type) {
+    record_type(b, t->base_type);
+  }
+}
 
 /* ------------------------------------------------------------------ builder */
 
@@ -91,10 +142,42 @@ void mtlc_builder_destroy(MtlcBuilder *builder) {
     free(builder->decls[i].param_types);
   }
   free(builder->decls);
+  for (size_t i = 0; i < builder->global_count; i++) {
+    free(builder->globals[i].name);
+  }
+  free(builder->globals);
+  free(builder->seen_types);
   if (builder->program) {
     ir_program_destroy(builder->program);
   }
   free(builder);
+}
+
+void mtlc_builder_global(MtlcBuilder *builder, const char *name,
+                        const MtlcType *type, long long init_value,
+                        int is_extern) {
+  if (!builder || builder->error || !name || !type) {
+    if (builder) {
+      builder->error = 1;
+    }
+    return;
+  }
+  if (builder->global_count == builder->global_capacity) {
+    size_t next = builder->global_capacity ? builder->global_capacity * 2 : 8;
+    GlobalDecl *grown = realloc(builder->globals, next * sizeof(GlobalDecl));
+    if (!grown) {
+      builder->error = 1;
+      return;
+    }
+    builder->globals = grown;
+    builder->global_capacity = next;
+  }
+  GlobalDecl *g = &builder->globals[builder->global_count++];
+  g->name = mettle_strdup(name);
+  g->type = type;
+  g->init_value = init_value;
+  g->is_extern = is_extern ? 1 : 0;
+  record_type(builder, type);
 }
 
 MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
@@ -149,16 +232,17 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
   if (param_count > 0) {
     const char **type_names = calloc(param_count, sizeof(char *));
     for (size_t i = 0; i < param_count; i++) {
-      type_names[i] =
-          param_types && param_types[i]
-              ? mtlc_type_kind_name(param_types[i]->kind)
-              : "int64";
+      type_names[i] = type_name(param_types ? param_types[i] : NULL);
+      if (param_types && param_types[i]) {
+        record_type(builder, param_types[i]);
+      }
     }
     ir_function_set_parameters(irf, (const char **)decl->param_names,
                                type_names, param_count);
     free(type_names);
   }
-  irf->return_type_name = mettle_strdup(mtlc_type_kind_name(return_type->kind));
+  irf->return_type_name = mettle_strdup(type_name(return_type));
+  record_type(builder, return_type);
   if (!ir_program_add_function(builder->program, irf)) {
     ir_function_destroy(irf);
     builder->error = 1;
@@ -260,6 +344,7 @@ MtlcValue mtlc_local(MtlcFn *fn, const char *name, const MtlcType *type) {
     }
     return MTLC_NO_VALUE;
   }
+  record_type(fn->builder, type);
   MtlcValue res = push_value(fn, ir_operand_symbol(name));
   const IROperand *dest = value_operand(fn, res);
   if (!dest) {
@@ -268,10 +353,31 @@ MtlcValue mtlc_local(MtlcFn *fn, const char *name, const MtlcType *type) {
   IRInstruction inst = {0};
   inst.op = IR_OP_DECLARE_LOCAL;
   inst.dest = *dest;
-  inst.text = (char *)mtlc_type_kind_name(type->kind);
+  inst.text = (char *)type_name(type);
   inst.value_type = (MtlcType *)type;
   emit(fn, &inst);
   return res;
+}
+
+MtlcValue mtlc_global_ref(MtlcFn *fn, const char *name) {
+  if (!fn || !name) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  return push_value(fn, ir_operand_symbol(name));
+}
+
+MtlcValue mtlc_const_float(MtlcFn *fn, const MtlcType *type, double value) {
+  if (!fn || !type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  int bits = (type->kind == MTLC_TYPE_FLOAT32) ? 32 : 64;
+  return push_value(fn, ir_operand_float_sized(value, bits));
 }
 
 /* --------------------------------------------------------------- instructions */
@@ -307,6 +413,7 @@ MtlcValue mtlc_binary(MtlcFn *fn, const char *op, MtlcValue lhs, MtlcValue rhs,
     fn->builder->error = 1;
     return MTLC_NO_VALUE;
   }
+  record_type(fn->builder, result_type);
   /* copy operands before push_value may realloc the table out from under them */
   IROperand lc = *l, rc = *r;
   MtlcValue res = fresh_temp(fn);
@@ -387,6 +494,7 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
       argv[i] = *a; /* shallow alias; append clones */
     }
   }
+  record_type(fn->builder, return_type);
   int is_void = (return_type->kind == MTLC_TYPE_VOID);
   MtlcValue res = is_void ? MTLC_NO_VALUE : fresh_temp(fn);
   IRInstruction inst = {0};
@@ -404,6 +512,138 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
   emit(fn, &inst);
   free(argv); /* elements were cloned by append; free the container only */
   return res;
+}
+
+MtlcValue mtlc_cast(MtlcFn *fn, MtlcValue value, const MtlcType *type) {
+  if (!fn || !type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  const IROperand *v = value_operand(fn, value);
+  if (!v) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  record_type(fn->builder, type);
+  IROperand vc = *v;
+  MtlcValue res = fresh_temp(fn);
+  const IROperand *dest = value_operand(fn, res);
+  if (!dest) {
+    return MTLC_NO_VALUE;
+  }
+  IRInstruction inst = {0};
+  inst.op = IR_OP_CAST;
+  inst.dest = *dest;
+  inst.lhs = vc;
+  inst.text = (char *)type_name(type);
+  inst.value_type = (MtlcType *)type;
+  if (mtlc_type_is_float(type)) {
+    inst.is_float = 1;
+    inst.float_bits = (int)(type->size * 8);
+    fn->values[res].float_bits = inst.float_bits;
+  }
+  emit(fn, &inst);
+  return res;
+}
+
+MtlcValue mtlc_address_of(MtlcFn *fn, MtlcValue storage,
+                         const MtlcType *pointer_type) {
+  if (!fn || !pointer_type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  const IROperand *s = value_operand(fn, storage);
+  if (!s) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  record_type(fn->builder, pointer_type);
+  IROperand sc = *s;
+  MtlcValue res = fresh_temp(fn);
+  const IROperand *dest = value_operand(fn, res);
+  if (!dest) {
+    return MTLC_NO_VALUE;
+  }
+  IRInstruction inst = {0};
+  inst.op = IR_OP_ADDRESS_OF;
+  inst.dest = *dest;
+  inst.lhs = sc;
+  inst.value_type = (MtlcType *)pointer_type;
+  emit(fn, &inst);
+  return res;
+}
+
+/* Apply the load/store scalar flags the code generators key on: the element's
+ * byte size travels in `rhs`, floats set is_float+float_bits, and unsigned
+ * integer elements set is_unsigned (so a 32-bit load zero-extends). Mirrors
+ * ir_lowering's shape exactly. */
+static void apply_mem_flags(IRInstruction *inst, const MtlcType *elem) {
+  inst->rhs = ir_operand_int((long long)mtlc_type_size(elem));
+  if (mtlc_type_is_float(elem)) {
+    inst->is_float = 1;
+    inst->float_bits = (int)(elem->size * 8);
+  } else if (mtlc_type_is_unsigned(elem)) {
+    inst->is_unsigned = 1;
+  }
+}
+
+MtlcValue mtlc_load(MtlcFn *fn, MtlcValue address, const MtlcType *elem_type) {
+  if (!fn || !elem_type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  const IROperand *a = value_operand(fn, address);
+  if (!a) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  record_type(fn->builder, elem_type);
+  IROperand ac = *a;
+  MtlcValue res = fresh_temp(fn);
+  const IROperand *dest = value_operand(fn, res);
+  if (!dest) {
+    return MTLC_NO_VALUE;
+  }
+  IRInstruction inst = {0};
+  inst.op = IR_OP_LOAD;
+  inst.dest = *dest;
+  inst.lhs = ac;
+  apply_mem_flags(&inst, elem_type);
+  inst.value_type = (MtlcType *)elem_type;
+  if (inst.is_float) {
+    fn->values[res].float_bits = inst.float_bits;
+  }
+  emit(fn, &inst);
+  return res;
+}
+
+void mtlc_store(MtlcFn *fn, MtlcValue address, MtlcValue value,
+               const MtlcType *elem_type) {
+  if (!fn || !elem_type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return;
+  }
+  const IROperand *a = value_operand(fn, address);
+  const IROperand *v = value_operand(fn, value);
+  if (!a || !v) {
+    fn->builder->error = 1;
+    return;
+  }
+  record_type(fn->builder, elem_type);
+  IRInstruction inst = {0};
+  inst.op = IR_OP_STORE;
+  inst.dest = *a;
+  inst.lhs = *v;
+  apply_mem_flags(&inst, elem_type);
+  emit(fn, &inst);
 }
 
 /* --------------------------------------------------------------- control flow */
@@ -491,6 +731,30 @@ MtlcModule *mtlc_builder_finish(MtlcBuilder *builder) {
   }
 
   register_scalar_types(builder->program);
+  /* every distinct type the builder saw, resolvable by its NAME (pointer
+   * types like "int64*" included -- codegen resolves DECLARE_LOCAL/parameter
+   * type names against this registry) */
+  for (size_t i = 0; i < builder->seen_count; i++) {
+    ir_program_register_type(builder->program, type_name(builder->seen_types[i]),
+                             (MtlcType *)builder->seen_types[i]);
+  }
+
+  /* module symbol table: global variables */
+  for (size_t i = 0; i < builder->global_count; i++) {
+    GlobalDecl *g = &builder->globals[i];
+    IRModuleSymbol entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.name = g->name;
+    entry.kind = IR_MODSYM_VARIABLE;
+    entry.is_extern = g->is_extern;
+    entry.type = (MtlcType *)g->type;
+    if (!g->is_extern) {
+      entry.has_initializer = 1;
+      entry.init_is_float = 0;
+      entry.init_bits = g->init_value;
+    }
+    ir_program_add_symbol(builder->program, &entry);
+  }
 
   /* module symbol table: one entry per declared function */
   for (size_t i = 0; i < builder->decl_count; i++) {

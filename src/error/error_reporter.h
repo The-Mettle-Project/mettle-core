@@ -32,7 +32,12 @@ typedef enum {
   DIAG_SEVERITY_NOTE_OF
 } ErrorSeverity;
 
-#include "../parser/ast.h"
+/* Part of libmtlc: the reporter is a frontend-NEUTRAL diagnostics facility. It
+ * renders errors/warnings against raw source text + SourceLocation/SourceSpan
+ * positions and knows nothing about any AST or token stream -- the backend
+ * (e.g. the compile-time interpreter) and any frontend can both report through
+ * it. Keep it that way: no frontend includes here. */
+#include "../source_location.h"
 
 typedef struct {
   size_t line;

@@ -58,6 +58,67 @@ const MtlcType *mtlc_type_scalar(MtlcTypeKind kind) {
   }
 }
 
+/* Interned pointer types: pointer-to-X is created once and lives for the
+ * process (same immortality contract as the scalar singletons -- the module
+ * type registry stores MtlcType* by reference and never frees them). The
+ * table is tiny in practice: one entry per distinct pointee. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Thread-local, upholding the backend's no-shared-mutable-global-state
+ * invariant (see common.h): two frontends on separate threads each intern
+ * their own (immutable, immortal) pointer descriptors. */
+#include "../common.h"
+static MTLC_THREAD_LOCAL const MtlcType **g_ptr_cache;
+static MTLC_THREAD_LOCAL size_t g_ptr_cache_count, g_ptr_cache_cap;
+
+const MtlcType *mtlc_type_pointer(const MtlcType *base) {
+  if (!base) {
+    return NULL;
+  }
+  for (size_t i = 0; i < g_ptr_cache_count; i++) {
+    if (g_ptr_cache[i]->base_type == (MtlcType *)base) {
+      return g_ptr_cache[i];
+    }
+  }
+  MtlcType *p = (MtlcType *)calloc(1, sizeof(MtlcType));
+  if (!p) {
+    return NULL;
+  }
+  p->kind = MTLC_TYPE_POINTER;
+  p->size = 8;
+  p->alignment = 8;
+  p->base_type = (MtlcType *)base;
+  /* name: "<base>*" (e.g. "int64*", "float32**") -- parseable anywhere a
+   * type NAME is carried (DECLARE_LOCAL text, parameter type names). */
+  {
+    const char *bn = base->name ? base->name : mtlc_type_kind_name(base->kind);
+    size_t n = strlen(bn) + 2;
+    char *nm = (char *)malloc(n);
+    if (!nm) {
+      free(p);
+      return NULL;
+    }
+    snprintf(nm, n, "%s*", bn);
+    p->name = nm;
+  }
+  if (g_ptr_cache_count == g_ptr_cache_cap) {
+    size_t next = g_ptr_cache_cap ? g_ptr_cache_cap * 2 : 8;
+    const MtlcType **grown =
+        (const MtlcType **)realloc(g_ptr_cache, next * sizeof(*g_ptr_cache));
+    if (!grown) {
+      free((char *)p->name);
+      free(p);
+      return NULL;
+    }
+    g_ptr_cache = grown;
+    g_ptr_cache_cap = next;
+  }
+  g_ptr_cache[g_ptr_cache_count++] = p;
+  return p;
+}
+
 int mtlc_type_is_integer(const MtlcType *t) {
   if (!t) {
     return 0;

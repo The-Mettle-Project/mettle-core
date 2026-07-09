@@ -57,6 +57,14 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
                              const MtlcType *const *param_types,
                              size_t param_count, int is_extern);
 
+/* Declare a module-level global variable of a scalar `type`, optionally with a
+ * constant integer initializer (pass 0 for zero-initialized). `is_extern` != 0
+ * declares a global defined elsewhere. Reference it inside a function with
+ * mtlc_global_ref. */
+void mtlc_builder_global(MtlcBuilder *builder, const char *name,
+                        const MtlcType *type, long long init_value,
+                        int is_extern);
+
 /* ---- values ---- */
 
 /* Reference parameter `index` (0-based) of this function as a value. */
@@ -65,9 +73,16 @@ MtlcValue mtlc_fn_param(MtlcFn *fn, size_t index);
 /* An integer literal of `type`. */
 MtlcValue mtlc_const_int(MtlcFn *fn, const MtlcType *type, long long value);
 
+/* A floating literal; `type` selects float32 or float64. */
+MtlcValue mtlc_const_float(MtlcFn *fn, const MtlcType *type, double value);
+
 /* Declare a mutable local variable and return a value referring to it: reads
  * use the returned handle, mtlc_assign writes through it. */
 MtlcValue mtlc_local(MtlcFn *fn, const char *name, const MtlcType *type);
+
+/* Reference a module-level global declared with mtlc_builder_global. Reads use
+ * the handle; mtlc_assign writes through it. */
+MtlcValue mtlc_global_ref(MtlcFn *fn, const char *name);
 
 /* ---- instructions ---- */
 
@@ -88,6 +103,22 @@ MtlcValue mtlc_unary(MtlcFn *fn, const char *op, MtlcValue operand,
  * or MTLC_NO_VALUE when `return_type` is void. */
 MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
                    size_t arg_count, const MtlcType *return_type);
+
+/* Convert `value` to `type` (integer width/sign changes, int<->float,
+ * int<->pointer). */
+MtlcValue mtlc_cast(MtlcFn *fn, MtlcValue value, const MtlcType *type);
+
+/* The address of local/parameter `storage`, as a pointer value. */
+MtlcValue mtlc_address_of(MtlcFn *fn, MtlcValue storage,
+                         const MtlcType *pointer_type);
+
+/* Load a scalar of `elem_type` from the address held in `address` (a pointer
+ * value, e.g. a parameter, an mtlc_address_of result, or malloc'd memory). */
+MtlcValue mtlc_load(MtlcFn *fn, MtlcValue address, const MtlcType *elem_type);
+
+/* Store scalar `value` of `elem_type` to the address held in `address`. */
+void mtlc_store(MtlcFn *fn, MtlcValue address, MtlcValue value,
+               const MtlcType *elem_type);
 
 /* ---- control flow ---- */
 

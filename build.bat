@@ -266,6 +266,9 @@ for %%o in (obj\codegen\binary_emitter.o obj\codegen\code_generator.o obj\codege
 for %%o in (obj\codegen\binary\*.o) do %AR% rcs bin\mtlc.lib %%o
 for %%o in (obj\linker\*.o) do %AR% rcs bin\mtlc.lib %%o
 %AR% rcs bin\mtlc.lib obj\debug\debug_info.o
+REM The diagnostics reporter is frontend-neutral (raw source text + SourceLocation,
+REM no AST) and the backend comptime interpreter reports through it -> libmtlc.
+%AR% rcs bin\mtlc.lib obj\error\error_reporter.o
 for %%o in (obj\compiler\*.o) do %AR% rcs bin\mtlc.lib %%o
 %AR% rcs bin\mtlc.lib obj\common.o obj\mtlc_api.o obj\mtlc_build.o obj\mtlc_lib_fallbacks.o
 if not exist bin\mtlc.lib (
@@ -274,7 +277,7 @@ if not exist bin\mtlc.lib (
 )
 
 echo Linking mettle ^(reference frontend^) against libmtlc...
-%CC% obj\lexer\lexer.o obj\parser\ast.o obj\parser\parser.o obj\semantic\symbol_table.o obj\semantic\type_checker.o obj\semantic\type_checker_types.o obj\semantic\type_checker_errors.o obj\semantic\type_checker_safety.o obj\semantic\type_checker_init_tracker.o obj\semantic\type_checker_decl.o obj\semantic\type_checker_match.o obj\semantic\type_checker_stmt.o obj\semantic\type_checker_expr.o obj\semantic\type_checker_memory.o obj\semantic\register_allocator.o obj\semantic\import_resolver.o obj\semantic\monomorphize.o obj\ir\ir_lowering.o obj\ir\ir_lower_address.o obj\ir\ir_lower_defer.o obj\ir\ir_lower_expr.o obj\ir\ir_lower_stmt.o obj\ir\ir_lower_support.o obj\ir\ir_lower_switch_match.o obj\ir\ir_lower_types.o obj\frontend\mtlc_type_from_frontend.o obj\frontend\mtlc_lower_module.o obj\error\error_reporter.o obj\error\error_explain.o obj\runtime\crash_handler.o obj\tracy_build.o obj\main.o bin\mtlc.lib -static -o bin\mettle.exe %LDFLAGS%
+%CC% obj\lexer\lexer.o obj\parser\ast.o obj\parser\parser.o obj\semantic\symbol_table.o obj\semantic\type_checker.o obj\semantic\type_checker_types.o obj\semantic\type_checker_errors.o obj\semantic\type_checker_safety.o obj\semantic\type_checker_init_tracker.o obj\semantic\type_checker_decl.o obj\semantic\type_checker_match.o obj\semantic\type_checker_stmt.o obj\semantic\type_checker_expr.o obj\semantic\type_checker_memory.o obj\semantic\register_allocator.o obj\semantic\import_resolver.o obj\semantic\monomorphize.o obj\ir\ir_lowering.o obj\ir\ir_lower_address.o obj\ir\ir_lower_defer.o obj\ir\ir_lower_expr.o obj\ir\ir_lower_stmt.o obj\ir\ir_lower_support.o obj\ir\ir_lower_switch_match.o obj\ir\ir_lower_types.o obj\frontend\mtlc_type_from_frontend.o obj\frontend\mtlc_lower_module.o obj\error\error_explain.o obj\runtime\crash_handler.o obj\tracy_build.o obj\main.o bin\mtlc.lib -static -o bin\mettle.exe %LDFLAGS%
 
 if %ERRORLEVEL% NEQ 0 (
     echo Build failed!

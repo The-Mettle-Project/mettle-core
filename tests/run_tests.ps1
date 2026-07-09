@@ -5764,6 +5764,84 @@ else {
   }
 }
 
+# Full public-API surface gate. Compiles tests/public_api_test.c (includes ONLY
+# include/mtlc, links ONLY bin/mtlc.lib) and runs it: it builds three modules
+# through the public IR builder -- globals, extern libc calls, pointer
+# load/store, address-of, float arithmetic + casts -- and emits through
+# mtlc_emit/mtlc_build_executable to all four targets: a native x86-64 exe
+# (run below: exit 42 + stdout OK), PTX text, a SPIR-V binary, and an AArch64
+# ELF (each structurally verified inside the test). Skipped without gcc.
+if (-not $calcGcc) {
+  Write-Host "[SKIP] public_api (gcc not found)"
+}
+elseif (-not (Test-Path "bin\mtlc.lib")) {
+  Write-Host "[SKIP] public_api (bin\mtlc.lib not present)"
+}
+else {
+  $total++
+  try {
+    $pubExe = Join-Path $tmpDir "public_api_test.exe"
+    $pubOut = Join-Path $tmpDir "pubapi"
+    New-Item -ItemType Directory -Force $pubOut | Out-Null
+    $buildOut = & $calcGcc.Source -Wall -Wextra -std=c99 -Iinclude `
+      tests/public_api_test.c bin/mtlc.lib -o $pubExe -ldbghelp 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "building public_api_test failed: $buildOut" }
+    $runOut = & $pubExe $pubOut 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "public_api_test failed: $runOut" }
+    $nativeExe = Join-Path $pubOut "pubapi_native.exe"
+    if (-not (Test-Path $nativeExe)) { throw "no native executable produced" }
+    $nativeOut = & $nativeExe | Out-String
+    if ($LASTEXITCODE -ne 42) { throw "native exe exit code $LASTEXITCODE, expected 42" }
+    if ($nativeOut -notmatch "OK") { throw "native exe stdout missing OK: '$nativeOut'" }
+    Write-CaseResult -Name "public_api" -Passed $true
+  }
+  catch {
+    $failed++
+    Write-CaseResult -Name "public_api" -Passed $false -Reason $_.Exception.Message
+  }
+}
+
+# libmtlc self-containment audit. Computes the archive's external symbol
+# closure (every symbol some member references that no member defines) and
+# fails if any of it matches the project's own naming conventions -- i.e. if a
+# lib member reaches back into driver/frontend code (the ir_comptime ->
+# error_reporter coupling was exactly this class of bug). System/libc/toolchain
+# externals (__imp_*, __mingw_*, malloc, ...) are the normal cost of being a C
+# library and are allowed. Skipped when nm (binutils) is unavailable.
+$nmCmd = Get-Command nm -ErrorAction SilentlyContinue
+if (-not $nmCmd) {
+  Write-Host "[SKIP] libmtlc_selfcontained (nm not found)"
+}
+elseif (-not (Test-Path "bin\mtlc.lib")) {
+  Write-Host "[SKIP] libmtlc_selfcontained (bin\mtlc.lib not present)"
+}
+else {
+  $total++
+  try {
+    $nmLines = & $nmCmd.Source "bin\mtlc.lib" 2>$null
+    $defined = New-Object System.Collections.Generic.HashSet[string]
+    $undef = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($ln in $nmLines) {
+      if ($ln -match '\s+U\s+(\S+)\s*$') { [void]$undef.Add($Matches[1]) }
+      elseif ($ln -match '\s+[A-TV-Zabd-tv-z]\s+(\S+)\s*$') { [void]$defined.Add($Matches[1]) }
+    }
+    $projectPrefix = '^(mettle_|mtlc_|ir_|error_|source_|type_checker|symbol_table_|ast_|parser_|lexer_|token_|monomorphize|import_resolver|register_allocator|string_is_interned|compile_)'
+    $bad = @()
+    foreach ($s in $undef) {
+      if (-not $defined.Contains($s) -and $s -match $projectPrefix) { $bad += $s }
+    }
+    if ($bad.Count -gt 0) {
+      throw ("bin\mtlc.lib references driver/frontend symbols it does not define: " +
+             (($bad | Sort-Object) -join ', '))
+    }
+    Write-CaseResult -Name "libmtlc_selfcontained" -Passed $true
+  }
+  catch {
+    $failed++
+    Write-CaseResult -Name "libmtlc_selfcontained" -Passed $false -Reason $_.Exception.Message
+  }
+}
+
 # Differential miscompile fuzzer gate. Generates UB-free programs, builds each
 # at debug and release, and fails on any exit-code divergence (a silent
 # miscompile). See tools/fuzz/README.md. Skipped if Python is unavailable or

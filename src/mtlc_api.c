@@ -6,9 +6,12 @@
  * mtlc/ headers. */
 #include "mtlc/mtlc.h"
 
+#include "codegen/binary/arm64_ir.h"
 #include "codegen/binary/startup.h"
 #include "codegen/binary_emitter.h"
 #include "codegen/code_generator.h"
+#include "codegen/ptx_emitter.h"
+#include "codegen/spirv_emitter.h"
 #include "ir/ir.h"
 #include "ir/ir_optimize.h"
 #include "ir/ml_opt.h"
@@ -150,6 +153,11 @@ int mtlc_optimize(MtlcContext *ctx, MtlcModule *module) {
   if (!module || !module->ir) {
     return 0;
   }
+  /* Honor the context's documented contract: opt level 0 = none. A NULL ctx
+   * keeps the historical conservative default (optimize on). */
+  if (ctx && ctx->opt_level <= 0) {
+    return 1;
+  }
   IROptimizeOptions options;
   /* Zero every field so future additions default off. */
   IROptimizeOptions zero = {0};
@@ -208,6 +216,73 @@ int mtlc_emit_object(MtlcContext *ctx, MtlcModule *module, const char *path) {
   }
   code_generator_destroy(gen);
   return ok;
+}
+
+int mtlc_emit(MtlcContext *ctx, MtlcModule *module, MtlcArch arch,
+              const char *path) {
+  if (!module || !module->ir || !path) {
+    return 0;
+  }
+  switch (arch) {
+  case MTLC_ARCH_X86_64:
+    return mtlc_emit_object(ctx, module, path);
+
+  case MTLC_ARCH_ARM64: {
+    /* Self-contained static AArch64 ELF executable: _start calls main() and
+     * exits with its return value (the driver's --emit-arm64 product). */
+    Arm64Emit ae;
+    arm64_emit_init(&ae);
+    int ok = arm64_ir_encode_program(&ae, module->ir, "main") &&
+             arm64_emit_finalize(&ae);
+    if (ok) {
+      ok = arm64_write_elf(path, ae.code.data, ae.code.len);
+      if (!ok) {
+        fprintf(stderr, "mtlc: could not write AArch64 ELF '%s'\n", path);
+      }
+    } else {
+      fprintf(stderr, "mtlc: AArch64 lowering failed (an op outside the "
+                      "supported scalar subset, or an unresolved call)\n");
+    }
+    arm64_emit_free(&ae);
+    return ok;
+  }
+
+  case MTLC_ARCH_PTX: {
+    FILE *out = fopen(path, "w");
+    if (!out) {
+      fprintf(stderr, "mtlc: could not open PTX output '%s'\n", path);
+      return 0;
+    }
+    char *err = NULL;
+    int ok = ptx_emit_program(module->ir, NULL, out, &err);
+    fclose(out);
+    if (!ok) {
+      fprintf(stderr, "mtlc: PTX emission failed: %s\n",
+              err ? err : "unknown error");
+      free(err);
+    }
+    return ok;
+  }
+
+  case MTLC_ARCH_SPIRV: {
+    FILE *out = fopen(path, "wb");
+    if (!out) {
+      fprintf(stderr, "mtlc: could not open SPIR-V output '%s'\n", path);
+      return 0;
+    }
+    char *err = NULL;
+    int ok = spirv_emit_program(module->ir, NULL, out, &err);
+    fclose(out);
+    if (!ok) {
+      fprintf(stderr, "mtlc: SPIR-V emission failed: %s\n",
+              err ? err : "unknown error");
+      free(err);
+    }
+    return ok;
+  }
+  }
+  fprintf(stderr, "mtlc: unknown architecture %d\n", (int)arch);
+  return 0;
 }
 
 /* Link `object_paths` + the C-runtime startup object into a PE executable using
