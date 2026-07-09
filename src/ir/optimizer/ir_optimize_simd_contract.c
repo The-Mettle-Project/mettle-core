@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "common.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -39,7 +40,7 @@ void ir_optimize_set_simd_report(int enabled) { g_simd_report = enabled; }
 
 /* Program access for program-level fix simulations (call-in-body re-runs the
  * inliner, which needs callee lookup). NULL outside the per-function stage. */
-static IRProgram *g_explain_program = NULL;
+static MTLC_THREAD_LOCAL IRProgram *g_explain_program = NULL;
 
 void ir_explain_set_program(IRProgram *program) { g_explain_program = program; }
 

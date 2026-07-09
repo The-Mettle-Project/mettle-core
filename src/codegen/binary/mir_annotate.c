@@ -1,4 +1,5 @@
 #include "codegen/binary/mir_annotate.h"
+#include "common.h"
 #include "codegen/binary/mir.h"
 #include "ir/ir.h"
 #include "ir/ir_optimize.h"
@@ -155,7 +156,7 @@ typedef struct {
   int cost_estimated;   /* number of spans that fell back to an opcode estimate */
 } AnnotFunc;
 
-static struct {
+static MTLC_THREAD_LOCAL struct {
   int enabled;
   MirAnnotSyntax syntax;
   char *output_path;

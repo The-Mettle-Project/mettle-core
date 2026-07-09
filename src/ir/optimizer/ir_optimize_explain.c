@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "common.h"
 #include "../ir_explain_memory.h"
 
 #include <stdarg.h>
@@ -33,15 +34,15 @@
  * Remarks are limited to the main input file (the focus file) so imported
  * stdlib modules don't flood the report. */
 
-static int g_explain = 0;
-static const char *g_explain_focus_file = NULL;
+static MTLC_THREAD_LOCAL int g_explain = 0;
+static MTLC_THREAD_LOCAL const char *g_explain_focus_file = NULL;
 /* Output binary path (-o): a large report is diverted to a `.explain.txt`
  * sidecar next to it instead of flooding the terminal. */
-static const char *g_explain_output_path = NULL;
+static MTLC_THREAD_LOCAL const char *g_explain_output_path = NULL;
 /* Set while a fix hypothesis is being simulated on a scratch clone: the
  * re-run optimizer passes must not pollute the report with the clone's
  * remarks (the unroller, for one, records remarks from inside the stages). */
-static int g_explain_hypothesis = 0;
+static MTLC_THREAD_LOCAL int g_explain_hypothesis = 0;
 
 void ir_explain_set_hypothesis(int active) { g_explain_hypothesis = active; }
 
@@ -55,13 +56,13 @@ void ir_explain_set_output_path(const char *path) {
  * fragments are accumulated here as sections flush, and finalize assembles
  * the document. */
 
-static int g_explain_json = 0;
+static MTLC_THREAD_LOCAL int g_explain_json = 0;
 /* When set (by --annotate-asm), ir_explain_flush keeps the remark table alive
  * past optimization so the codegen annotator can join it onto emitted asm. */
-static int g_explain_retain_remarks = 0;
-static char *g_json_buf = NULL;
-static size_t g_json_len = 0;
-static size_t g_json_cap = 0;
+static MTLC_THREAD_LOCAL int g_explain_retain_remarks = 0;
+static MTLC_THREAD_LOCAL char *g_json_buf = NULL;
+static MTLC_THREAD_LOCAL size_t g_json_len = 0;
+static MTLC_THREAD_LOCAL size_t g_json_cap = 0;
 
 void ir_explain_set_json(int enabled) { g_explain_json = enabled; }
 
@@ -129,9 +130,9 @@ static void ir_explain_json_str(const char *s) {
  * the total size is known: small reports print to stderr as before, large
  * ones are written to the sidecar with a digest on stderr. */
 
-static char *g_report_buf = NULL;
-static size_t g_report_len = 0;
-static size_t g_report_cap = 0;
+static MTLC_THREAD_LOCAL char *g_report_buf = NULL;
+static MTLC_THREAD_LOCAL size_t g_report_len = 0;
+static MTLC_THREAD_LOCAL size_t g_report_cap = 0;
 
 static void ir_explain_emit(const char *fmt, ...) {
   va_list args;
@@ -190,9 +191,9 @@ typedef struct {
   size_t depth;   /* loop nest depth (1 = top level); 0 = not a loop/unknown */
 } IRExplainRemark;
 
-static IRExplainRemark *g_remarks = NULL;
-static size_t g_remark_count = 0;
-static size_t g_remark_capacity = 0;
+static MTLC_THREAD_LOCAL IRExplainRemark *g_remarks = NULL;
+static MTLC_THREAD_LOCAL size_t g_remark_count = 0;
+static MTLC_THREAD_LOCAL size_t g_remark_capacity = 0;
 
 /* Backend (codegen-stage) entries: per function, did it get the
  * register-allocating MIR backend or fall back to baseline codegen? */
@@ -203,9 +204,9 @@ typedef struct {
   size_t instructions; /* non-nop IR size: where baseline codegen COSTS */
 } IRExplainBackendEntry;
 
-static IRExplainBackendEntry *g_backend = NULL;
-static size_t g_backend_count = 0;
-static size_t g_backend_capacity = 0;
+static MTLC_THREAD_LOCAL IRExplainBackendEntry *g_backend = NULL;
+static MTLC_THREAD_LOCAL size_t g_backend_count = 0;
+static MTLC_THREAD_LOCAL size_t g_backend_capacity = 0;
 
 /* ---- memory diagnostics (--explain surfacing, fed by the type checker) ---- */
 typedef struct {
@@ -215,11 +216,11 @@ typedef struct {
   char *fix; /* may be NULL */
 } IRExplainMemNote;
 
-static IRExplainMemNote *g_mem = NULL;
-static size_t g_mem_count = 0;
-static size_t g_mem_capacity = 0;
-static int g_mem_collect = 0;
-static char *g_mem_focus = NULL; /* basename to filter by, or NULL */
+static MTLC_THREAD_LOCAL IRExplainMemNote *g_mem = NULL;
+static MTLC_THREAD_LOCAL size_t g_mem_count = 0;
+static MTLC_THREAD_LOCAL size_t g_mem_capacity = 0;
+static MTLC_THREAD_LOCAL int g_mem_collect = 0;
+static MTLC_THREAD_LOCAL char *g_mem_focus = NULL; /* basename to filter by, or NULL */
 
 void ir_optimize_set_explain(int enabled, const char *focus_file) {
   g_explain = enabled;

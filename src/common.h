@@ -19,6 +19,19 @@ typedef ptrdiff_t ssize_t;
 #endif
 #endif
 
+/* Thread-local storage qualifier. The backend keeps its mutable per-compile
+ * diagnostic state (the --explain report/remarks and the --annotate-asm capture)
+ * thread-local so two frontends can drive libmtlc concurrently on separate
+ * threads without clobbering each other -- i.e. the backend has no shared
+ * mutable global state. (MettleCompilerContext already uses FLS/pthread_key.)
+ * On MinGW __thread pulls in libwinpthread; the driver links -static so the
+ * shipped mettle.exe stays self-contained. */
+#if defined(_MSC_VER)
+#define MTLC_THREAD_LOCAL __declspec(thread)
+#else
+#define MTLC_THREAD_LOCAL __thread
+#endif
+
 #define METTLE_FNV1A_OFFSET_BASIS ((size_t)1469598103934665603ULL)
 #define METTLE_FNV1A_PRIME        ((size_t)1099511628211ULL)
 
