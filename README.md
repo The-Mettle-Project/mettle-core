@@ -1,86 +1,131 @@
 
-
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/The-Mettle-Project/Mettle/development/mettle-syntax/icons/mettle-dark.svg" />
-  <img src="https://raw.githubusercontent.com/The-Mettle-Project/Mettle/development/mettle-syntax/icons/mettle-light.svg" alt="Mettle" width="120" height="120" />
-</picture>
+# libmtlc
 
-# Mettle
+**A from-scratch, frontend-agnostic compiler backend.**
 
-**A from-scratch systems language that compiles straight to native x86-64.**
-
-Its own backend, linker, and source-level debugger. No LLVM, no VM, no managed runtime.
+Custom IR. Classical + GNN optimizers. Native codegen. Native linking.
+Any frontend that can lower into the IR can drive the pipeline.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 &nbsp;![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-2b6cb0.svg)
-&nbsp;![Codegen](https://img.shields.io/badge/codegen-native%20x86--64-2f855a.svg)
-&nbsp;![Dependencies](https://img.shields.io/badge/dependencies-no%20LLVM%20%C2%B7%20no%20VM-c53030.svg)
-&nbsp;![GPU](https://img.shields.io/badge/GPU-CUDA%20%2F%20PTX-805ad5.svg)
+&nbsp;![Targets](https://img.shields.io/badge/targets-x86--64%20%7C%20ARM64%20%7C%20PTX-2f855a.svg)
+&nbsp;![Dependencies](https://img.shields.io/badge/dependencies-no%20VM%20%C2%B7%20hand--encoded%20ISA-c53030.svg)
 
-[**Documentation**](docs/LANGUAGE.md)
-&nbsp;·&nbsp; [**Install**](#install)
-&nbsp;·&nbsp; [**Examples**](examples/)
+[**API**](include/mtlc/)
+&nbsp;·&nbsp; [**Docs**](docs/)
+&nbsp;·&nbsp; [**Mettle language**](docs/LANGUAGE.md)
 &nbsp;·&nbsp; [**GitHub**](https://github.com/The-Mettle-Project/Mettle)
-&nbsp;·&nbsp; [**Releases**](https://github.com/The-Mettle-Project/Mettle/releases)
 
 </div>
 
 ---
 
-Mettle compiles `.mettle` source to native x86-64. On Windows, `mettle --build` produces a PE executable using a built-in linker. On Linux, it produces ELF and links with the system toolchain.
+This repository is building **libmtlc**: a reusable native compiler backend. Frontends lower their own AST into libmtlc's IR and type model; the library owns optimize → codegen → link from there.
 
-## Features
+**Mettle** is the reference frontend in-tree — a systems language that exercises the full stack end to end. Both live here: the backend is not private to one language, and the language is not bolted onto someone else's stack.
 
-- Static types, pointers, structs, enums, closures, and `defer`/`errdefer`
-- Direct calls to C and OS APIs; a bundled stdlib for I/O, memory, math, and more
-- **Compile-time memory diagnostics**: use-after-free, double free, leaks, and dangling pointers caught at compile time, with no annotations. Interprocedural and zero false positives. See [borrow checker](docs/borrow-checker.md).
-- **AVX2 auto-vectorizer** that beats `gcc -O3` on several kernels, plus `@simd` / `@simd!` contracts (vectorize or fail the build)
-- **`--explain`**: the compiler reports every optimization decision, why loops did or didn't vectorize, and flags regressions since your last build. Suggested fixes are verified by simulation before they're printed. `--explain-json` for CI.
-- **Optimization contracts**: `@inline!` and `@noalloc` fail the build with the compiler's reason if the guarantee can't be met
-- **Built-in source-level debugger**: breakpoints, stepping, live variable read/write via `--debug-hooks`. No gdb, no PDB, no DWARF.
-- **GPU offload to NVIDIA**: write `kernel` functions and launch with `dispatch K[grid, block](args)`. Native CUDA/PTX backend, no `nvcc`. See [GPU offload](docs/gpu.md).
-- **Crash forensics**: with `-s`, faults report what the bad address is (null field access, freed heap block, etc.); `--native-heap` catches use-after-free at the faulting instruction
-- Optional Tracy profiling, runtime timing, and debug stack traces
+| Layer | Role |
+|-------|------|
+| **libmtlc** | Backend library: IR, optimizers, codegen (x86-64 / ARM64 / PTX), PE/ELF linking. Public C headers in [`include/mtlc/`](include/mtlc/). Ships as `bin/mtlc.lib` (Windows) or `bin/libmtlc.a` (Linux). |
+| **mettle** | Reference language + driver. Lowers `.mettle` into libmtlc IR, then runs the backend pipeline. |
 
-Windows is the most complete target (internal PE linker, Win32 GUI via `std/ui`). Linux supports builds, a libc-backed stdlib, and compiler development. See [known limitations](docs/known-limitations.md).
+## Why
 
-## Example
+Most new-language projects either emit C and outsource the rest, or grow a private backend only that language can use.
 
-Save as `hello.mettle`:
+libmtlc is a **standalone backend** with its own type IR and module model, so multiple frontends (or experimental languages) can target the same optimizers and machine-code emitters. Hand-built instruction encodings. Own PE linker on Windows. No VM, no external assembler for the host path.
+
+## Pipeline
+
+```
+                    your frontend                    libmtlc
+              ┌─────────────────────┐    ┌──────────────────────────────┐
+ source  ──►  │ parse / typecheck / │──► │ IR module (MtlcType, symbols, │
+              │ lower to IR         │    │ per-inst value_type)         │
+              └─────────────────────┘    │        │                     │
+                                         │        ▼                     │
+                                         │ classical optimizer          │
+                                         │ optional GNN ML-opt          │
+                                         │   (translation-validated)    │
+                                         │        │                     │
+                                         │        ▼                     │
+                                         │ codegen: x86-64 · ARM64 · PTX│
+                                         │ link:    PE (internal) · ELF │
+                                         └──────────────────────────────┘
+```
+
+The backend does **not** include or call frontend headers. Codegen resolves types and symbols only from IR. Thread-local diagnostic state allows concurrent sessions from separate frontend threads.
+
+## Public API
+
+```c
+#include <mtlc/mtlc.h>
+
+MtlcContext *ctx = mtlc_context_create();
+mtlc_context_set_opt_level(ctx, 1);
+mtlc_context_set_ml_opt(ctx, 1);       /* optional GNN pass */
+
+/* Frontend builds an IRProgram*, then hands ownership to the backend: */
+MtlcModule *mod = mtlc_module_adopt_ir(ir_program);
+mtlc_optimize(ctx, mod);
+mtlc_apply_ml_opt(ctx, mod, NULL);
+
+/* Codegen + link are still driven by the reference driver today;
+ * the IR boundary is already frontend-free. */
+void *ir = mtlc_module_ir(mod);
+
+mtlc_module_destroy(mod);
+mtlc_context_destroy(ctx);
+```
+
+Headers:
+
+| Header | Responsibility |
+|--------|----------------|
+| [`mtlc.h`](include/mtlc/mtlc.h) | Umbrella |
+| [`type.h`](include/mtlc/type.h) | Backend type IR (`MtlcType`) — what a frontend translates *into* |
+| [`module.h`](include/mtlc/module.h) | Opaque IR module handle |
+| [`context.h`](include/mtlc/context.h) | Session: opt level, ML-opt, explain, whole-program |
+| [`pipeline.h`](include/mtlc/pipeline.h) | `mtlc_optimize`, `mtlc_apply_ml_opt` |
+| [`target.h`](include/mtlc/target.h) | Arch / object / link enums |
+
+## What the backend does
+
+- **IR** — Instruction stream with backend-owned types, module symbol table, and function/global metadata. No AST after lowering.
+- **Classical optimizer** — vectorization (AVX2), inlining, SROA, loop transforms, contracts (`@simd!`, `@inline!`, `@noalloc`), `--explain` decision reports.
+- **ML optimizer** (`--ml-opt`) — GNN proposes rewrites; interpreter-based translation validation accepts or rejects each one. The model is never trusted alone. See [ml-opt](docs/ml-opt.md).
+- **Codegen** — hand-encoded x86-64 (+ AVX2), ARM64, and NVIDIA PTX. No external assembler for the host path.
+- **Link** — built-in PE linker on Windows; ELF objects on Linux (system link).
+- **Debug / forensics** — source-level debug hooks, crash diagnosis, optional native-heap UAF traps.
+
+## Reference frontend: Mettle
+
+Mettle is a systems language that compiles to native code *through* libmtlc. It is how the backend is developed and regression-tested (hundreds of end-to-end tests).
+
+Language highlights (full reference: [docs/LANGUAGE.md](docs/LANGUAGE.md)):
+
+- Static types, pointers, structs, enums, closures, `defer` / `errdefer`
+- C / OS interop; bundled stdlib
+- Compile-time memory diagnostics (UAF, double free, leaks) without ownership annotations — [borrow checker](docs/borrow-checker.md)
+- GPU kernels via native PTX — [GPU](docs/gpu.md)
 
 ```mettle
 import "std/io";
 
-fn fib(n: int32) -> int64 {
-  if (n <= 1) { return n; }
-  var a: int64 = 0;
-  var b: int64 = 1;
-  var i: int32 = 2;
-  while (i <= n) {
-    var next = a + b;
-    a = b;
-    b = next;
-    i = i + 1;
-  }
-  return b;
-}
-
 fn main() -> int32 {
-  print("fib(10) = ");
-  print_int(fib(10));
-  newline();
+  print("hello from the reference frontend\n");
   return 0;
 }
 ```
 
 ```bash
 mettle --build hello.mettle -o hello
-./hello          # Windows: .\hello.exe
+./hello   # Windows: .\hello.exe
 ```
 
-## Install
+## Install (Mettle driver)
 
 **Linux (x86-64)**
 
@@ -94,87 +139,78 @@ curl -fsSL https://raw.githubusercontent.com/The-Mettle-Project/Mettle/main/inst
 irm https://raw.githubusercontent.com/The-Mettle-Project/Mettle/main/install.ps1 | iex
 ```
 
-Installs to `~/.mettle` (Linux) or `%LOCALAPPDATA%\Mettle` (Windows) and updates user PATH. No root or admin required. Pin a release with `--version v0.13.0` (Linux) or `-Version v0.13.0` (Windows).
+Installs the `mettle` driver + stdlib/runtime (not a separate libmtlc package yet). Pin with `--version v0.13.0` / `-Version v0.13.0`.
 
 ## Build from source
 
-**Windows** (gcc or clang):
+Produces the backend archive **and** the reference driver:
+
+**Windows**
 
 ```powershell
-.\build.bat          # default: gcc
+.\build.bat          # bin\mtlc.lib + bin\mettle.exe
 .\build.bat clang
 ```
 
-**Linux / macOS**:
+**Linux**
 
 ```bash
-make                 # bin/mettle + bundled stdlib/ and runtime/
-make install         # optional: /usr/local/bin, stdlib, runtime
+make                 # bin/libmtlc.a + bin/mettle
+make libmtlc         # backend only
 ```
-
-Typical release build:
 
 ```bash
 ./bin/mettle --build --release hello.mettle -o hello
 ```
 
-Common flags: `--release` / `-O`, `--explain`, `--debug-hooks`, `-d` / `-s` / `-g`, `--native-heap`. Full list: `mettle --help`.
-
-## Documentation
-
-- [Language reference](docs/LANGUAGE.md)
-- [Borrow checker](docs/borrow-checker.md)
-- [Control flow](docs/control-flow.md)
-- [GPU offload](docs/gpu.md)
-- [Compilation](docs/compilation.md)
-- [Imports](docs/imports.md)
-- [Runtime model](docs/runtime-model.md)
-- [Standard library](docs/standard-library.md)
-- [C interop](docs/c-interop.md)
-- [Known limitations](docs/known-limitations.md)
-
-`mettle docs` prints paths to these files next to the compiler binary.
+Common flags: `--release` / `-O`, `--explain`, `--ml-opt`, `--debug-hooks`, `-d` / `-s` / `-g`. Full list: `mettle --help`.
 
 ## Repository layout
 
 ```
-src/            compiler (lexer through codegen, linker, diagnostics)
-stdlib/         standard library
-src/runtime/    optional helper objects (crash traces, atomics, ...)
-tests/          regression tests; run_tests.ps1 on Windows
-examples/       benchmarks and demos
-tools/          ELF tests, benchmarks, fuzz scripts
-mettle-syntax/  VS Code / Cursor extension
-docs/           language and tooling reference
-```
-
-## Examples and benchmarks
-
-Runnable samples live under [examples/](examples/). Benchmark suites pair Mettle, C, and Rust:
-
-```powershell
-.\tools\benchmark\run-benchmarks.ps1
+include/mtlc/     public C API (the stable surface of the backend)
+src/
+  mtlc_api.c      API implementation
+  ir/             IR core, classical optimizer, GNN ML-opt, type IR
+  codegen/        x86-64 · ARM64 · PTX  (backend-only; no frontend includes)
+  linker/         COFF / PE
+  frontend/       Mettle→libmtlc adapters (type map, symbol bake)
+  lexer/ parser/ semantic/   reference frontend
+  ir/ir_lower*.c  AST→IR lowering (frontend concern; not in the archive)
+  main.c          driver that links against libmtlc
+stdlib/           Mettle standard library
+src/runtime/      optional objects linked into user programs
+tests/            end-to-end suite through the reference frontend
+docs/             language + tooling reference
+examples/         demos and benchmarks
+tools/            fuzz, benchmarks, ML training
 ```
 
 ## Development
 
-**Windows** (primary CI: full test suite):
-
 ```powershell
+# Windows (primary CI)
 .\build.bat
 .\tests\run_tests.ps1
 ```
 
-**Linux** (native ELF backend):
-
 ```bash
+# Linux ELF path
 make -j"$(nproc)"
 bash tools/test-elf-native.sh
 ```
 
-## Editor support
+Ground rules (hand-encoded ISA only, differential fuzzer for codegen/opt changes): [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The [mettle-syntax](mettle-syntax/) extension turns VS Code or Cursor into a full Mettle IDE: debugging on F5, go to definition, rename, completion, an interactive `--explain` dashboard, and compiler-backed diagnostics. Everything runs against the compiler in your workspace; no separate language server.
+## Documentation
+
+- [Language reference](docs/LANGUAGE.md) (Mettle)
+- [Compilation & flags](docs/compilation.md)
+- [ML optimizer](docs/ml-opt.md)
+- [GPU / PTX](docs/gpu.md)
+- [Borrow checker](docs/borrow-checker.md)
+- [C interop](docs/c-interop.md)
+- [Known limitations](docs/known-limitations.md)
 
 ## License
 
