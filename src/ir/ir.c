@@ -191,6 +191,10 @@ IRFunction *ir_function_create(const char *name) {
   function->parameter_names = NULL;
   function->parameter_types = NULL;
   function->parameter_count = 0;
+  function->return_type_name = NULL;
+  function->location.line = 0;
+  function->location.column = 0;
+  function->location.filename = NULL;
   function->instructions = NULL;
   function->instruction_count = 0;
   function->instruction_capacity = 0;
@@ -266,6 +270,7 @@ void ir_function_destroy(IRFunction *function) {
   }
 
   free(function->name);
+  free(function->return_type_name);
   ir_function_clear_parameters(function);
   ir_function_clear_cfg(function);
   for (size_t i = 0; i < function->instruction_count; i++) {

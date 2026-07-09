@@ -42,7 +42,6 @@ CODEGEN_SOURCES = \
 	$(SRCDIR)/codegen/binary_emitter.c \
 	$(SRCDIR)/codegen/code_generator.c \
 	$(SRCDIR)/codegen/elf_emitter.c \
-	$(SRCDIR)/codegen/program_entry.c \
 	$(SRCDIR)/codegen/ptx_emitter.c \
 	$(wildcard $(SRCDIR)/codegen/binary/*.c)
 LINKER_SOURCES = $(wildcard $(SRCDIR)/linker/*.c)

@@ -133,6 +133,10 @@ IRFunction *ir_lower_function(IRLoweringContext *context,
     ir_set_error(context, "Out of memory while creating IR function");
     return NULL;
   }
+  function->location = declaration->location;
+  if (function_data->return_type) {
+    function->return_type_name = mettle_strdup(function_data->return_type);
+  }
   function->is_inline = function_data->is_inline;
   function->is_inline_contract = function_data->is_inline_contract;
   function->is_noinline = function_data->is_noinline;

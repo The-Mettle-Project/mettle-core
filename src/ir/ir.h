@@ -359,6 +359,13 @@ typedef struct {
   char **parameter_names;
   char **parameter_types;
   size_t parameter_count;
+  /* Return type NAME (e.g. "int32", "void"), mirroring parameter_types'
+   * by-name representation. Resolve with the module type registry
+   * (ir_program_lookup_type), same as a parameter type. NULL for none. */
+  char *return_type_name;
+  /* Declaration site, for debug info / --annotate-asm / --explain records that
+   * used to read the origin AST node's location. */
+  SourceLocation location;
   IRInstruction *instructions;
   size_t instruction_count;
   size_t instruction_capacity;
@@ -422,6 +429,12 @@ typedef struct {
   int init_is_float;
   long long init_bits;      /* numeric initializer (float carries bit pattern) */
   char *init_string;        /* owned; string-literal initializer bytes, or NULL */
+  /* Set when the source had an initializer expression but it could not be
+   * folded to a compile-time constant (or a string global's initializer wasn't
+   * a string literal) -- the direct-object backend requires a constant global
+   * initializer and should report this as an error rather than silently
+   * zero-initializing. */
+  int has_unfoldable_initializer;
   /* Function signature (IR_MODSYM_FUNCTION), for call ABI classification. */
   MtlcType *return_type;    /* borrowed */
   MtlcType **param_types;   /* owned array of borrowed ptrs, or NULL */

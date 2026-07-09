@@ -10,8 +10,8 @@
 #include <string.h>
 
 /* Source file a function was declared in (for the --explain focus filter). */
-static const char *mir_function_filename(FunctionDeclaration *fd) {
-  return (fd && fd->body) ? fd->body->location.filename : NULL;
+static const char *mir_function_filename(const IRFunction *fn) {
+  return fn ? fn->location.filename : NULL;
 }
 
 /* Non-nop IR size of the function currently in the eligibility gate, captured
@@ -54,13 +54,13 @@ static const char *mir_env_skipfn(void) {
   return cached;
 }
 
-static int mir_trace_bail(FunctionDeclaration *fd, const char *reason) {
+static int mir_trace_bail(const IRFunction *fn, const char *reason) {
   if (mir_env_trace()) {
     fprintf(stderr, "MIR-BAIL\t%s\t%s\n", reason,
-            (fd && fd->name) ? fd->name : "?");
+            (fn && fn->name) ? fn->name : "?");
   }
-  if (ir_explain_enabled() && fd && fd->name) {
-    ir_explain_backend_function(fd->name, mir_function_filename(fd), 0, reason,
+  if (ir_explain_enabled() && fn && fn->name) {
+    ir_explain_backend_function(fn->name, mir_function_filename(fn), 0, reason,
                                 g_mir_gate_fn_size);
   }
   return 0;
@@ -1096,9 +1096,8 @@ static int mir_call_is_supported(CodeGenerator *g,
 /* Pure-ish scan: returns 1 if every instruction is in the supported set and the
  * signature is GP-only. Uses generator for type queries; no MIR built yet. */
 int mir_function_is_eligible(CodeGenerator *generator,
-                             FunctionDeclaration *function_data,
                              IRFunction *ir_function) {
-  if (!generator || !function_data || !ir_function) {
+  if (!generator || !ir_function) {
     return 0;
   }
   g_mir_gate_fn_size = 0;
@@ -1117,8 +1116,8 @@ int mir_function_is_eligible(CodeGenerator *generator,
     }
     /* Bisect: comma-separated list of function names forced to fallback. */
     const char *skip = mir_env_skipfn();
-    if (skip && function_data->name) {
-      const char *nm = function_data->name;
+    if (skip && ir_function->name) {
+      const char *nm = ir_function->name;
       size_t nl = strlen(nm);
       const char *p = skip;
       while (*p) {
@@ -1139,17 +1138,17 @@ int mir_function_is_eligible(CodeGenerator *generator,
     return 0;
   }
   /* Signature: <=4 GP params, GP-or-void return, no indirect return. */
-  if (function_data->parameter_count > MIR_MAX_PARAMS) {
-    return mir_trace_bail(function_data, "sig:params>max");
+  if (ir_function->parameter_count > MIR_MAX_PARAMS) {
+    return mir_trace_bail(ir_function, "sig:params>max");
   }
   {
     int pis_float[MIR_MAX_PARAMS];
-    for (size_t i = 0; i < function_data->parameter_count; i++) {
-      const char *pt = function_data->parameter_types
-                           ? function_data->parameter_types[i]
+    for (size_t i = 0; i < ir_function->parameter_count; i++) {
+      const char *pt = ir_function->parameter_types
+                           ? ir_function->parameter_types[i]
                            : NULL;
       if (!mir_type_is_param_value(generator, pt)) {
-        return mir_trace_bail(function_data, "sig:param_nonscalar");
+        return mir_trace_bail(ir_function, "sig:param_nonscalar");
       }
       MtlcType *rt = code_generator_binary_get_resolved_type(generator, pt, 0);
       pis_float[i] =
@@ -1162,42 +1161,42 @@ int mir_function_is_eligible(CodeGenerator *generator,
      * shifting every user parameter up by one — model that here so the on-stack
      * detection matches the prologue's homing exactly. */
     int hidden = mir_type_is_indirect_aggregate(generator,
-                                                function_data->return_type)
+                                                ir_function->return_type_name)
                      ? 1
                      : 0;
-    if (function_data->parameter_count > 0) {
+    if (ir_function->parameter_count > 0) {
       const BinaryAbi *abi = code_generator_binary_active_abi();
       int aug_float[MIR_MAX_PARAMS + 1];
       BinaryArgLocation locs[MIR_MAX_PARAMS + 1];
-      size_t n = function_data->parameter_count + (size_t)hidden;
+      size_t n = ir_function->parameter_count + (size_t)hidden;
       if (n > MIR_MAX_PARAMS) {
-        return mir_trace_bail(function_data, "sig:params>max");
+        return mir_trace_bail(ir_function, "sig:params>max");
       }
       if (hidden) {
         aug_float[0] = 0; /* hidden out-pointer is an integer arg */
       }
-      for (size_t i = 0; i < function_data->parameter_count; i++) {
+      for (size_t i = 0; i < ir_function->parameter_count; i++) {
         aug_float[i + (size_t)hidden] = pis_float[i];
       }
       if (!code_generator_binary_compute_arg_layout(abi, aug_float, n, locs,
                                                     NULL)) {
-        return mir_trace_bail(function_data, "sig:arg_layout");
+        return mir_trace_bail(ir_function, "sig:arg_layout");
       }
-      for (size_t i = 0; i < function_data->parameter_count; i++) {
+      for (size_t i = 0; i < ir_function->parameter_count; i++) {
         if (pis_float[i] &&
             locs[i + (size_t)hidden].kind == BINARY_ARG_ON_STACK) {
-          return mir_trace_bail(function_data, "sig:float_stack_param");
+          return mir_trace_bail(ir_function, "sig:float_stack_param");
         }
       }
     }
   }
   /* A non-void return must be a register value (scalar / DIRECT small agg) OR an
    * INDIRECT aggregate returned via the hidden out-pointer (handled at RETURN). */
-  if (function_data->return_type && function_data->return_type[0] &&
-      strcmp(function_data->return_type, "void") != 0 &&
-      !mir_type_is_mir_value(generator, function_data->return_type) &&
-      !mir_type_is_indirect_aggregate(generator, function_data->return_type)) {
-    return mir_trace_bail(function_data, "sig:return_nonscalar");
+  if (ir_function->return_type_name && ir_function->return_type_name[0] &&
+      strcmp(ir_function->return_type_name, "void") != 0 &&
+      !mir_type_is_mir_value(generator, ir_function->return_type_name) &&
+      !mir_type_is_indirect_aggregate(generator, ir_function->return_type_name)) {
+    return mir_trace_bail(ir_function, "sig:return_nonscalar");
   }
 
   /* Collect the names that are defined inside the function: parameters and
@@ -1208,10 +1207,10 @@ int mir_function_is_eligible(CodeGenerator *generator,
   MirFunction scratch_fn;
   memset(&scratch_fn, 0, sizeof(scratch_fn));
   int globals_ok = 1;
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
-    if (function_data->parameter_names[i]) {
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
+    if (ir_function->parameter_names[i]) {
       mir_name_map_get_or_add(&defined, &scratch_fn,
-                              function_data->parameter_names[i], 0, MIR_RC_GP,
+                              ir_function->parameter_names[i], 0, MIR_RC_GP,
                               8);
     }
   }
@@ -1294,7 +1293,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
   mir_name_map_destroy(&defined);
   mir_function_destroy(&scratch_fn);
   if (!globals_ok) {
-    return mir_trace_bail(function_data, "global_access");
+    return mir_trace_bail(ir_function, "global_access");
   }
 
   for (size_t i = 0; i < ir_function->instruction_count; i++) {
@@ -1331,7 +1330,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
                  0 &&
              mir_operand_struct_home_size(generator, ir_function, &in->lhs) > 0);
         if (!allowed) {
-          return mir_trace_bail(function_data, "indirect_agg_byname");
+          return mir_trace_bail(ir_function, "indirect_agg_byname");
         }
       }
       for (size_t a = 0; a < in->argument_count; a++) {
@@ -1345,7 +1344,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
             !(in->op == IR_OP_CALL &&
               mir_name_is_indirect_struct_local(generator, ir_function,
                                                 in->arguments[a].name))) {
-          return mir_trace_bail(function_data, "indirect_agg_byname");
+          return mir_trace_bail(ir_function, "indirect_agg_byname");
         }
       }
     }
@@ -1364,7 +1363,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
        * rejected by the guard below, so only field access ever touches it. */
       if (in->text && !mir_type_is_mir_value(generator, in->text) &&
           !mir_type_is_indirect_aggregate(generator, in->text)) {
-        return mir_trace_bail(function_data, "declare_local:nonscalar");
+        return mir_trace_bail(ir_function, "declare_local:nonscalar");
       }
       break;
     case IR_OP_BRANCH_ZERO:
@@ -1386,15 +1385,15 @@ int mir_function_is_eligible(CodeGenerator *generator,
       for (int k = 0; k < 2; k++) {
         if (eq[k]->kind != IR_OPERAND_TEMP && eq[k]->kind != IR_OPERAND_SYMBOL &&
             eq[k]->kind != IR_OPERAND_INT) {
-          return mir_trace_bail(function_data, "branch_eq:operand_kind");
+          return mir_trace_bail(ir_function, "branch_eq:operand_kind");
         }
         if (eq[k]->kind == IR_OPERAND_TEMP &&
             mir_temp_is_float(generator, ir_function, eq[k]->name, 0)) {
-          return mir_trace_bail(function_data, "branch_eq:float");
+          return mir_trace_bail(ir_function, "branch_eq:float");
         }
       }
       if (in->is_float) {
-        return mir_trace_bail(function_data, "branch_eq:float");
+        return mir_trace_bail(ir_function, "branch_eq:float");
       }
       break;
     }
@@ -1423,7 +1422,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
       } else if (!mir_arith_opcode(in->text, &tmp) &&
                  !mir_is_comparison(in->text) &&
                  strcmp(in->text, "/") != 0 && strcmp(in->text, "%") != 0) {
-        return mir_trace_bail(function_data, "binary:other");
+        return mir_trace_bail(ir_function, "binary:other");
       }
       if (in->dest.kind != IR_OPERAND_TEMP && in->dest.kind != IR_OPERAND_SYMBOL) {
         return 0;
@@ -1453,15 +1452,15 @@ int mir_function_is_eligible(CodeGenerator *generator,
       /* Integer unary `-`, `~`, `+`, `!`; float unary `-` (negate as 0-x) and
        * `+` (copy). Float `~`/`!` are not valid and popcnt is deferred. */
       if (!in->text) {
-        return mir_trace_bail(function_data, "unary:float_or_unsupported");
+        return mir_trace_bail(ir_function, "unary:float_or_unsupported");
       }
       if (in->is_float) {
         if (strcmp(in->text, "-") != 0 && strcmp(in->text, "+") != 0) {
-          return mir_trace_bail(function_data, "unary:float_or_unsupported");
+          return mir_trace_bail(ir_function, "unary:float_or_unsupported");
         }
       } else if (strcmp(in->text, "-") != 0 && strcmp(in->text, "~") != 0 &&
                  strcmp(in->text, "+") != 0 && strcmp(in->text, "!") != 0) {
-        return mir_trace_bail(function_data, "unary:float_or_unsupported");
+        return mir_trace_bail(ir_function, "unary:float_or_unsupported");
       }
       if (in->dest.kind != IR_OPERAND_TEMP && in->dest.kind != IR_OPERAND_SYMBOL) {
         return 0;
@@ -1480,19 +1479,19 @@ int mir_function_is_eligible(CodeGenerator *generator,
       if (in->lhs.kind == IR_OPERAND_STRING) {
         if (in->is_float || in->rhs.kind != IR_OPERAND_INT ||
             in->rhs.int_value != 8) {
-          return mir_trace_bail(function_data, "load:string_shape");
+          return mir_trace_bail(ir_function, "load:string_shape");
         }
         if (in->dest.kind != IR_OPERAND_TEMP &&
             in->dest.kind != IR_OPERAND_SYMBOL) {
-          return mir_trace_bail(function_data, "load:dest");
+          return mir_trace_bail(ir_function, "load:dest");
         }
         break;
       }
       if (in->lhs.kind != IR_OPERAND_TEMP && in->lhs.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "load:address_kind");
+        return mir_trace_bail(ir_function, "load:address_kind");
       }
       if (in->dest.kind != IR_OPERAND_TEMP && in->dest.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "load:dest");
+        return mir_trace_bail(ir_function, "load:dest");
       }
       break;
     case IR_OP_STORE:
@@ -1506,7 +1505,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
       break;
     case IR_OP_PREFETCH:
       if (in->lhs.kind != IR_OPERAND_TEMP && in->lhs.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "prefetch:addr");
+        return mir_trace_bail(ir_function, "prefetch:addr");
       }
       break;
     case IR_OP_SELECT: {
@@ -1516,17 +1515,17 @@ int mir_function_is_eligible(CodeGenerator *generator,
                                   in->argument_count > 0 ? &in->arguments[0]
                                                          : NULL};
       if (!sops[2]) {
-        return mir_trace_bail(function_data, "select:no_else");
+        return mir_trace_bail(ir_function, "select:no_else");
       }
       for (int s = 0; s < 3; s++) {
         if (sops[s]->kind != IR_OPERAND_TEMP &&
             sops[s]->kind != IR_OPERAND_SYMBOL &&
             sops[s]->kind != IR_OPERAND_INT) {
-          return mir_trace_bail(function_data, "select:operand_kind");
+          return mir_trace_bail(ir_function, "select:operand_kind");
         }
       }
       if (in->dest.kind != IR_OPERAND_TEMP && in->dest.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "select:dest_kind");
+        return mir_trace_bail(ir_function, "select:dest_kind");
       }
       break;
     }
@@ -1540,21 +1539,21 @@ int mir_function_is_eligible(CodeGenerator *generator,
        * other shape (returning a temp, a by-ref param, or a struct-returning
        * call result) is deferred to the fallback. */
       if (mir_type_is_indirect_aggregate(generator,
-                                         function_data->return_type) &&
+                                         ir_function->return_type_name) &&
           !(in->lhs.kind == IR_OPERAND_SYMBOL &&
             mir_name_is_indirect_struct_local(generator, ir_function,
                                               in->lhs.name))) {
-        return mir_trace_bail(function_data, "return:indirect_nonlocal");
+        return mir_trace_bail(ir_function, "return:indirect_nonlocal");
       }
       break;
     case IR_OP_CALL:
       if (!mir_call_is_supported(generator, ir_function, in)) {
-        return mir_trace_bail(function_data, "call_unsupported");
+        return mir_trace_bail(ir_function, "call_unsupported");
       }
       break;
     case IR_OP_CALL_INDIRECT:
       if (!mir_call_indirect_is_supported(generator, ir_function, in)) {
-        return mir_trace_bail(function_data, "call_indirect_unsupported");
+        return mir_trace_bail(ir_function, "call_indirect_unsupported");
       }
       break;
     case IR_OP_ADDRESS_OF:
@@ -1563,10 +1562,10 @@ int mir_function_is_eligible(CodeGenerator *generator,
        * Functions/strings have their own address forms and are deferred. */
       if (mir_addressof_kind(generator, ir_function, in) ==
           MIR_ADDROF_UNSUPPORTED) {
-        return mir_trace_bail(function_data, "addressof:unsupported");
+        return mir_trace_bail(ir_function, "addressof:unsupported");
       }
       if (in->dest.kind != IR_OPERAND_TEMP && in->dest.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "addressof:dest");
+        return mir_trace_bail(ir_function, "addressof:dest");
       }
       break;
     case IR_OP_SIMD_SLP_MAC_I8:
@@ -1583,13 +1582,13 @@ int mir_function_is_eligible(CodeGenerator *generator,
           in->arguments[0].kind != IR_OPERAND_INT ||
           (in->arguments[0].int_value != 4 &&
            in->arguments[0].int_value != 8)) {
-        return mir_trace_bail(function_data, "slp_mac:nonconst_K");
+        return mir_trace_bail(ir_function, "slp_mac:nonconst_K");
       }
       const IROperand *bases[3] = {&in->dest, &in->lhs, &in->rhs};
       for (int k = 0; k < 3; k++) {
         if (bases[k]->kind != IR_OPERAND_TEMP &&
             bases[k]->kind != IR_OPERAND_SYMBOL) {
-          return mir_trace_bail(function_data, "slp_mac:base_kind");
+          return mir_trace_bail(ir_function, "slp_mac:base_kind");
         }
       }
       /* count, a_off, b_off, b_stride, out_off */
@@ -1598,7 +1597,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
         const IROperand *o = &in->arguments[run_args[k]];
         if (o->kind != IR_OPERAND_TEMP && o->kind != IR_OPERAND_SYMBOL &&
             o->kind != IR_OPERAND_INT) {
-          return mir_trace_bail(function_data, "slp_mac:arg_kind");
+          return mir_trace_bail(ir_function, "slp_mac:arg_kind");
         }
       }
       break;
@@ -1616,13 +1615,13 @@ int mir_function_is_eligible(CodeGenerator *generator,
            in->arguments[0].int_value != 4 &&
            in->arguments[0].int_value != 8) ||
           in->arguments[1].kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "simd_fill:shape");
+        return mir_trace_bail(ir_function, "simd_fill:shape");
       }
       /* Mode 0 (element-counted) and mode 1 (begin->end byte walk) only; mode 2
        * (byte-offset walk with a start and a live-iv write-back) defers. */
       long long fill_mode = in->arguments[1].int_value;
       if (fill_mode != 0 && fill_mode != 1) {
-        return mir_trace_bail(function_data, "simd_fill:mode");
+        return mir_trace_bail(ir_function, "simd_fill:mode");
       }
       /* Mode 0 must start the induction variable at 0 (a nonzero start adjusts
        * both the base and the count; deferred). A nonzero/runtime OFFSET (the
@@ -1633,7 +1632,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
       if (fill_mode == 0) {
         if (!(in->arguments[3].kind == IR_OPERAND_INT &&
               in->arguments[3].int_value == 0)) {
-          return mir_trace_bail(function_data, "simd_fill:start");
+          return mir_trace_bail(ir_function, "simd_fill:start");
         }
         int offset_zero = (in->arguments[4].kind == IR_OPERAND_INT &&
                            in->arguments[4].int_value == 0);
@@ -1642,12 +1641,12 @@ int mir_function_is_eligible(CodeGenerator *generator,
                      in->arguments[5].kind == IR_OPERAND_INT &&
                      in->arguments[5].int_value == 64;
           if (!wide) {
-            return mir_trace_bail(function_data, "simd_fill:offset_width");
+            return mir_trace_bail(ir_function, "simd_fill:offset_width");
           }
           if (in->arguments[4].kind != IR_OPERAND_TEMP &&
               in->arguments[4].kind != IR_OPERAND_SYMBOL &&
               in->arguments[4].kind != IR_OPERAND_INT) {
-            return mir_trace_bail(function_data, "simd_fill:offset_kind");
+            return mir_trace_bail(ir_function, "simd_fill:offset_kind");
           }
         }
       }
@@ -1659,18 +1658,18 @@ int mir_function_is_eligible(CodeGenerator *generator,
         if (fill_mode != 0 ||
             !mir_local_or_param_type(generator, ir_function, in->dest.name,
                                      NULL)) {
-          return mir_trace_bail(function_data, "simd_fill:writeback");
+          return mir_trace_bail(ir_function, "simd_fill:writeback");
         }
       }
       if (in->lhs.kind != IR_OPERAND_TEMP && in->lhs.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "simd_fill:base");
+        return mir_trace_bail(ir_function, "simd_fill:base");
       }
       if (in->rhs.kind != IR_OPERAND_TEMP && in->rhs.kind != IR_OPERAND_SYMBOL &&
           in->rhs.kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "simd_fill:count");
+        return mir_trace_bail(ir_function, "simd_fill:count");
       }
       if (in->arguments[2].kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "simd_fill:value");
+        return mir_trace_bail(ir_function, "simd_fill:value");
       }
       break;
     }
@@ -1683,16 +1682,16 @@ int mir_function_is_eligible(CodeGenerator *generator,
        * broadcasts); a runtime coefficient stays in the fallback. F32 and F64
        * share this validation; the lowering below picks the width. */
       if (in->argument_count < 4 || !in->arguments) {
-        return mir_trace_bail(function_data, "affine_map:shape");
+        return mir_trace_bail(ir_function, "affine_map:shape");
       }
       if ((in->lhs.kind != IR_OPERAND_TEMP && in->lhs.kind != IR_OPERAND_SYMBOL) ||
           (in->rhs.kind != IR_OPERAND_TEMP && in->rhs.kind != IR_OPERAND_SYMBOL)) {
-        return mir_trace_bail(function_data, "affine_map:ptr");
+        return mir_trace_bail(ir_function, "affine_map:ptr");
       }
       if (in->arguments[0].kind != IR_OPERAND_TEMP &&
           in->arguments[0].kind != IR_OPERAND_SYMBOL &&
           in->arguments[0].kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "affine_map:count");
+        return mir_trace_bail(ir_function, "affine_map:count");
       }
       for (int k = 1; k <= 3; k++) {
         if (in->arguments[k].kind == IR_OPERAND_FLOAT) continue;
@@ -1705,7 +1704,7 @@ int mir_function_is_eligible(CodeGenerator *generator,
              in->arguments[k].kind == IR_OPERAND_SYMBOL)) {
           continue;
         }
-        return mir_trace_bail(function_data, "affine_map:coeff");
+        return mir_trace_bail(ir_function, "affine_map:coeff");
       }
       break;
     }
@@ -1722,21 +1721,21 @@ int mir_function_is_eligible(CodeGenerator *generator,
       if (in->argument_count < 7 || !in->arguments ||
           in->arguments[0].int_value != 0 /* reduce_op: maps only */ ||
           in->float_bits != 64) {
-        return mir_trace_bail(function_data, "vloop:shape");
+        return mir_trace_bail(ir_function, "vloop:shape");
       }
       if (code_generator_vloop_collect_dist(in, 0, vnames, vsrcs, &vn) < 0 ||
           vn > 3) {
-        return mir_trace_bail(function_data, "vloop:bases");
+        return mir_trace_bail(ir_function, "vloop:bases");
       }
       for (int vk = 0; vk < vn; vk++) {
         if (!vsrcs[vk] || (vsrcs[vk]->kind != IR_OPERAND_TEMP &&
                            vsrcs[vk]->kind != IR_OPERAND_SYMBOL)) {
-          return mir_trace_bail(function_data, "vloop:ptr");
+          return mir_trace_bail(ir_function, "vloop:ptr");
         }
       }
       if (in->lhs.kind != IR_OPERAND_TEMP && in->lhs.kind != IR_OPERAND_SYMBOL &&
           in->lhs.kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "vloop:count");
+        return mir_trace_bail(ir_function, "vloop:count");
       }
       break;
     }
@@ -1747,16 +1746,16 @@ int mir_function_is_eligible(CodeGenerator *generator,
       if (in->argument_count < 1 || !in->arguments ||
           (in->lhs.kind != IR_OPERAND_TEMP &&
            in->lhs.kind != IR_OPERAND_SYMBOL)) {
-        return mir_trace_bail(function_data, "silu:g");
+        return mir_trace_bail(ir_function, "silu:g");
       }
       if (in->arguments[0].kind != IR_OPERAND_TEMP &&
           in->arguments[0].kind != IR_OPERAND_SYMBOL &&
           in->arguments[0].kind != IR_OPERAND_INT) {
-        return mir_trace_bail(function_data, "silu:count");
+        return mir_trace_bail(ir_function, "silu:count");
       }
       if (in->rhs.kind != IR_OPERAND_NONE && in->rhs.kind != IR_OPERAND_STRING &&
           in->rhs.kind != IR_OPERAND_TEMP && in->rhs.kind != IR_OPERAND_SYMBOL) {
-        return mir_trace_bail(function_data, "silu:u");
+        return mir_trace_bail(ir_function, "silu:u");
       }
       break;
     }
@@ -1764,17 +1763,17 @@ int mir_function_is_eligible(CodeGenerator *generator,
       /* NEW, other SIMD ops, ROTATE_ADD: not yet. */
       char buf[40];
       snprintf(buf, sizeof(buf), "op:%d", (int)in->op);
-      return mir_trace_bail(function_data, buf);
+      return mir_trace_bail(ir_function, buf);
     }
     }
   }
   if (mir_env_trace()) {
     fprintf(stderr, "MIR-OK\t%s\n",
-            function_data->name ? function_data->name : "?");
+            ir_function->name ? ir_function->name : "?");
   }
-  if (ir_explain_enabled() && function_data->name) {
-    ir_explain_backend_function(function_data->name,
-                                mir_function_filename(function_data), 1, NULL,
+  if (ir_explain_enabled() && ir_function->name) {
+    ir_explain_backend_function(ir_function->name,
+                                mir_function_filename(ir_function), 1, NULL,
                                 g_mir_gate_fn_size);
   }
   return 1;
@@ -4792,7 +4791,7 @@ static void mir_sink_cold_exits(MirFunction *fn) {
 /* ---- emit entry --------------------------------------------------------- */
 
 int code_generator_binary_emit_function_via_mir(
-    CodeGenerator *generator, FunctionDeclaration *function_data,
+    CodeGenerator *generator,
     IRFunction *ir_function, BinaryFunctionContext *context) {
   MirFunction fn;
   MirNameMap map;
@@ -4834,11 +4833,11 @@ int code_generator_binary_emit_function_via_mir(
   /* Bind parameters to vregs and record their incoming extension. */
   const BinaryAbi *abi = code_generator_binary_active_abi();
   (void)abi;
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
-    const char *pname = function_data->parameter_names[i];
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
+    const char *pname = ir_function->parameter_names[i];
     MtlcType *pt = code_generator_binary_get_resolved_type(
-        generator, function_data->parameter_types
-                       ? function_data->parameter_types[i]
+        generator, ir_function->parameter_types
+                       ? ir_function->parameter_types[i]
                        : NULL,
         0);
     int pfb = pt ? code_generator_binary_resolved_type_float_bits(pt) : 0;
@@ -4872,7 +4871,7 @@ int code_generator_binary_emit_function_via_mir(
    * RETURN copies the struct there and returns the pointer in RAX. */
   {
     MtlcType *rt = code_generator_binary_get_resolved_type(
-        generator, function_data->return_type, 1);
+        generator, ir_function->return_type_name, 1);
     if (rt && code_generator_type_is_aggregate(rt) &&
         code_generator_abi_classify(rt) == ABI_PASS_INDIRECT) {
       fn.returns_indirect = 1;
@@ -5207,8 +5206,8 @@ int code_generator_binary_emit_function_via_mir(
   fn.cur_ir_index = -1;
   if (mir_annotate_enabled()) {
     mir_annotate_begin_function(
-        function_data->name, ir_function, mir_function_filename(function_data),
-        (function_data->body ? function_data->body->location.line : 0));
+        ir_function->name, ir_function, mir_function_filename(ir_function),
+        (ir_function->location.line));
     mir_annotate_note_backend("register-allocated", NULL);
   }
   if (!mir_encode(&fn) || fn.has_error) {
@@ -5229,7 +5228,7 @@ oom:
     code_generator_set_error(generator,
                              "Out of memory or unsupported construct while "
                              "emitting MIR for function '%s'",
-                             function_data->name ? function_data->name : "?");
+                             ir_function->name ? ir_function->name : "?");
   }
   free(wb.names);
   free(wb.all);

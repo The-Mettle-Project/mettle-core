@@ -501,17 +501,17 @@ int code_generator_binary_parameter_is_indirect(
     return 1;
   }
 
-  FunctionDeclaration *function_data = context->function_data;
-  if (!function_data || !function_data->parameter_names ||
-      !function_data->parameter_types) {
+  IRFunction *ir_function = context->ir_function;
+  if (!ir_function || !ir_function->parameter_names ||
+      !ir_function->parameter_types) {
     return 0;
   }
 
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
-    const char *parameter_name = function_data->parameter_names[i];
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
+    const char *parameter_name = ir_function->parameter_names[i];
     if (parameter_name && strcmp(parameter_name, name) == 0) {
       MtlcType *parameter_type = code_generator_binary_get_resolved_type(
-          generator, function_data->parameter_types[i], 0);
+          generator, ir_function->parameter_types[i], 0);
       return code_generator_abi_classify(parameter_type) == ABI_PASS_INDIRECT;
     }
   }
@@ -5460,9 +5460,9 @@ int code_generator_binary_emit_instruction(
      * caller using the full register (e.g. `(int64)narrow_fn()`) would read
      * that garbage. Zero-extend unsigned / sign-extend signed. */
     if (instruction->lhs.kind != IR_OPERAND_NONE && !instruction->is_float &&
-        context->function_data) {
+        context->ir_function) {
       MtlcType *ret_type = code_generator_binary_get_resolved_type(
-          generator, context->function_data->return_type, 1);
+          generator, context->ir_function->return_type_name, 1);
       if (ret_type && !code_generator_type_is_aggregate(ret_type) &&
           code_generator_binary_resolved_type_float_bits(ret_type) == 0) {
         int rw = code_generator_binary_resolved_type_scalar_size(ret_type);
@@ -5708,9 +5708,8 @@ int binary_emit_frame_allocation(BinaryCodeBuffer *code, int frame_size) {
 }
 
 int code_generator_binary_emit_prologue(CodeGenerator *generator,
-                                               BinaryFunctionContext *context,
-                                               FunctionDeclaration *function_data) {
-  if (!generator || !context || !function_data) {
+                                               BinaryFunctionContext *context) {
+  if (!generator || !context) {
     return 0;
   }
 
@@ -5761,7 +5760,7 @@ int code_generator_binary_emit_prologue(CodeGenerator *generator,
    * float-ness. The layout tells us each argument's register or stack home
    * under the active convention. */
   size_t hidden = context->returns_indirect ? 1u : 0u;
-  size_t layout_count = function_data->parameter_count + hidden;
+  size_t layout_count = context->ir_function->parameter_count + hidden;
   if (layout_count > 0) {
     int *is_float = calloc(layout_count, sizeof(int));
     BinaryArgLocation *locations =
@@ -5774,10 +5773,10 @@ int code_generator_binary_emit_prologue(CodeGenerator *generator,
       return 0;
     }
     /* Hidden out-pointer is integer (is_float[0] already 0). */
-    for (size_t i = 0; i < function_data->parameter_count; i++) {
+    for (size_t i = 0; i < context->ir_function->parameter_count; i++) {
       int fbits = code_generator_binary_named_type_float_bits(
-          generator, function_data->parameter_types
-                         ? function_data->parameter_types[i]
+          generator, context->ir_function->parameter_types
+                         ? context->ir_function->parameter_types[i]
                          : NULL);
       is_float[i + hidden] = fbits ? 1 : 0;
     }
@@ -5789,11 +5788,11 @@ int code_generator_binary_emit_prologue(CodeGenerator *generator,
       return 0;
     }
 
-    for (size_t i = 0; i < function_data->parameter_count; i++) {
-      const char *parameter_name = function_data->parameter_names[i];
+    for (size_t i = 0; i < context->ir_function->parameter_count; i++) {
+      const char *parameter_name = context->ir_function->parameter_names[i];
       int parameter_fbits = code_generator_binary_named_type_float_bits(
-          generator, function_data->parameter_types
-                         ? function_data->parameter_types[i]
+          generator, context->ir_function->parameter_types
+                         ? context->ir_function->parameter_types[i]
                          : NULL);
       BinaryGpRegister assigned_register = BINARY_GP_RAX;
       int parameter_in_register =

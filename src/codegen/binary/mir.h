@@ -511,13 +511,12 @@ int mir_encode(MirFunction *fn);
  * Stage 2 supported scalar-integer subset (no calls/floats/aggregates/
  * address-of, <=4 GP params, plain --release). */
 int mir_function_is_eligible(CodeGenerator *generator,
-                             FunctionDeclaration *function_data,
                              IRFunction *ir_function);
 
 /* Lower + allocate + encode an eligible function into context->code (full
  * prologue..epilogue, fixups resolved). Returns 0 on failure. */
 int code_generator_binary_emit_function_via_mir(
-    CodeGenerator *generator, FunctionDeclaration *function_data,
+    CodeGenerator *generator,
     IRFunction *ir_function, BinaryFunctionContext *context);
 
 #endif /* CODEGEN_BINARY_MIR_H */

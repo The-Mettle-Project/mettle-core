@@ -774,17 +774,17 @@ int code_generator_binary_function_can_promote_rsi_rdi(
 
 int code_generator_binary_promote_hot_symbols(
     CodeGenerator *generator, BinaryFunctionContext *context,
-    FunctionDeclaration *function_data, IRFunction *ir_function) {
+    IRFunction *ir_function) {
   static const BinaryGpRegister promotion_registers[] = {
       BINARY_GP_R12, BINARY_GP_R13, BINARY_GP_R14, BINARY_GP_R15,
       BINARY_GP_RBX, BINARY_GP_RSI, BINARY_GP_RDI};
 
-  if (!generator || !context || !function_data || !ir_function) {
+  if (!generator || !context || !ir_function) {
     return 0;
   }
 
   MtlcType *return_type = code_generator_binary_get_resolved_type(
-      generator, function_data->return_type, 1);
+      generator, ir_function->return_type_name, 1);
   size_t max_promoted =
       sizeof(promotion_registers) / sizeof(promotion_registers[0]);
   if (!code_generator_binary_function_can_promote_rsi_rdi(
@@ -802,7 +802,7 @@ int code_generator_binary_promote_hot_symbols(
         generator,
         "Failed to allocate loop-weight metadata for direct object function "
         "'%s'",
-        function_data->name);
+        ir_function->name);
     return 0;
   }
 
@@ -875,8 +875,8 @@ int code_generator_binary_promote_hot_symbols(
     const char *best_name = NULL;
     size_t best_score = 0;
 
-    for (size_t i = 0; i < function_data->parameter_count; i++) {
-      const char *name = function_data->parameter_names[i];
+    for (size_t i = 0; i < ir_function->parameter_count; i++) {
+      const char *name = ir_function->parameter_names[i];
       MtlcType *type = NULL;
       if (!name || code_generator_binary_symbol_already_promoted(context, name) ||
           binary_symbol_alias_table_get(&context->symbol_aliases, name) ||
@@ -887,7 +887,7 @@ int code_generator_binary_promote_hot_symbols(
 
       type = code_generator_binary_get_resolved_type(
           generator,
-          function_data->parameter_types ? function_data->parameter_types[i]
+          ir_function->parameter_types ? ir_function->parameter_types[i]
                                          : NULL,
           0);
       if (!code_generator_binary_type_is_gp_promotable(type)) {
@@ -1018,7 +1018,7 @@ int code_generator_binary_promote_hot_symbols(
       code_generator_set_error(
           generator,
           "Failed to promote hot symbol '%s' in direct object function '%s'",
-          best_name, function_data->name);
+          best_name, ir_function->name);
       free(loop_weights);
       return 0;
     }
@@ -1194,31 +1194,22 @@ MtlcType *code_generator_binary_get_operand_type_in_context(
 }
 
 int code_generator_binary_validate_signature(CodeGenerator *generator,
-                                                    FunctionDeclaration *function_data,
                                                     IRFunction *ir_function) {
-  if (!generator || !function_data || !ir_function) {
-    return 0;
-  }
-
-  if (function_data->parameter_count != ir_function->parameter_count) {
-    code_generator_set_error(
-        generator,
-        "IR parameter mismatch while lowering direct object function '%s'",
-        function_data->name);
+  if (!generator || !ir_function) {
     return 0;
   }
 
   MtlcType *return_type = NULL;
   const CgSym *function_symbol =
-      generator->symbol_table && function_data->name
-          ? code_generator_lookup_symbol(generator, function_data->name)
+      generator->symbol_table && ir_function->name
+          ? code_generator_lookup_symbol(generator, ir_function->name)
           : NULL;
   if (function_symbol && function_symbol->kind == SYMBOL_FUNCTION &&
       function_symbol->data.function.return_type) {
     return_type = function_symbol->data.function.return_type;
   } else {
     return_type = code_generator_binary_get_resolved_type(
-        generator, function_data->return_type, 1);
+        generator, ir_function->return_type_name, 1);
   }
 
   if (!code_generator_binary_resolved_type_is_abi_supported(return_type, 1)) {
@@ -1226,20 +1217,20 @@ int code_generator_binary_validate_signature(CodeGenerator *generator,
         generator,
         "Direct object backend only supports integer/pointer/string/float64 "
         "returns in function '%s'",
-        function_data->name);
+        ir_function->name);
     return 0;
   }
 
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
-    const char *type_name = function_data->parameter_types
-                                ? function_data->parameter_types[i]
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
+    const char *type_name = ir_function->parameter_types
+                                ? ir_function->parameter_types[i]
                                 : NULL;
     if (!code_generator_binary_type_is_abi_supported(generator, type_name, 0)) {
       code_generator_set_error(
           generator,
           "Direct object backend only supports integer/pointer/string/float64 "
           "parameters in function '%s'",
-          function_data->name);
+          ir_function->name);
       return 0;
     }
   }
@@ -1249,29 +1240,29 @@ int code_generator_binary_validate_signature(CodeGenerator *generator,
 
 
 int code_generator_binary_prepare_function_context(
-    CodeGenerator *generator, FunctionDeclaration *function_data,
+    CodeGenerator *generator,
     IRFunction *ir_function, BinaryFunctionContext *context) {
-  if (!generator || !function_data || !ir_function || !context) {
+  if (!generator || !ir_function || !context) {
     return 0;
   }
 
   memset(context, 0, sizeof(*context));
-  context->function_data = function_data;
-  context->function_name = function_data->name;
+  context->ir_function = ir_function;
+  context->function_name = ir_function->name;
   context->return_float_bits = code_generator_binary_resolved_type_float_bits(
       code_generator_binary_get_resolved_type(generator,
-                                              function_data->return_type, 1));
+                                              ir_function->return_type_name, 1));
 
   int parameter_home_size = 0;
-  if (function_data->parameter_count >
+  if (ir_function->parameter_count >
       (size_t)(INT_MAX / BINARY_FUNCTION_STACK_SLOT_SIZE)) {
     code_generator_set_error(generator,
                              "Too many parameters in function '%s'",
-                             function_data->name);
+                             ir_function->name);
     return 0;
   }
   parameter_home_size =
-      (int)(function_data->parameter_count * BINARY_FUNCTION_STACK_SLOT_SIZE);
+      (int)(ir_function->parameter_count * BINARY_FUNCTION_STACK_SLOT_SIZE);
 
   for (size_t i = 0; i < ir_function->instruction_count; i++) {
     const IRInstruction *instruction = &ir_function->instructions[i];
@@ -1284,7 +1275,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Failed to record address-taken symbol metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1294,20 +1285,20 @@ int code_generator_binary_prepare_function_context(
    * out-pointer as the first integer argument, consuming home slot 0 and
    * shifting user-parameter homes up by one. */
   MtlcType *fn_return_type =
-      function_data->return_type
+      ir_function->return_type_name
           ? code_generator_binary_get_resolved_type(
-                generator, function_data->return_type, 1)
+                generator, ir_function->return_type_name, 1)
           : NULL;
   int has_hidden_return =
       (code_generator_abi_classify(fn_return_type) == ABI_PASS_INDIRECT) ? 1 : 0;
   if (has_hidden_return) {
     /* Account for the extra home slot in parameter_home_size so the frame
      * layout includes room for the hidden pointer. */
-    if (function_data->parameter_count >
+    if (ir_function->parameter_count >
         (size_t)(INT_MAX / BINARY_FUNCTION_STACK_SLOT_SIZE - 1)) {
       code_generator_set_error(generator,
                                "Too many parameters in function '%s'",
-                               function_data->name);
+                               ir_function->name);
       return 0;
     }
     parameter_home_size += BINARY_FUNCTION_STACK_SLOT_SIZE;
@@ -1316,8 +1307,8 @@ int code_generator_binary_prepare_function_context(
   context->indirect_return_size =
       has_hidden_return ? code_generator_abi_type_size(fn_return_type) : 0;
 
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
-    const char *parameter_name = function_data->parameter_names[i];
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
+    const char *parameter_name = ir_function->parameter_names[i];
     int offset = (int)((i + 1 + (has_hidden_return ? 1 : 0)) *
                        BINARY_FUNCTION_STACK_SLOT_SIZE);
     if (!parameter_name ||
@@ -1326,7 +1317,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Failed to allocate parameter slot metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1335,9 +1326,9 @@ int code_generator_binary_prepare_function_context(
      * deref the home slot (which holds a pointer, not the struct itself). */
     {
       MtlcType *param_type =
-          function_data->parameter_types
+          ir_function->parameter_types
               ? code_generator_binary_get_resolved_type(
-                    generator, function_data->parameter_types[i], 0)
+                    generator, ir_function->parameter_types[i], 0)
               : NULL;
       if (code_generator_binary_type_is_cstring(param_type) &&
           !binary_named_slot_table_add(&context->cstring_symbols,
@@ -1345,7 +1336,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator,
             "Failed to allocate cstring parameter metadata in function '%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1360,8 +1351,8 @@ int code_generator_binary_prepare_function_context(
 
     {
       int param_fbits = code_generator_binary_named_type_float_bits(
-          generator, function_data->parameter_types
-                         ? function_data->parameter_types[i]
+          generator, ir_function->parameter_types
+                         ? ir_function->parameter_types[i]
                          : NULL);
       if (param_fbits &&
           !code_generator_binary_mark_float_symbol(context, parameter_name,
@@ -1369,7 +1360,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator,
             "Failed to allocate float parameter metadata in function '%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1395,7 +1386,7 @@ int code_generator_binary_prepare_function_context(
         instruction->dest.name[0] == '\0') {
       code_generator_set_error(
           generator, "Malformed local declaration in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1410,7 +1401,7 @@ int code_generator_binary_prepare_function_context(
           "Direct object backend does not support local type '%s' in function "
           "'%s'",
           instruction->text ? instruction->text : "<unknown>",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1428,7 +1419,7 @@ int code_generator_binary_prepare_function_context(
     if (local_storage_size <= 0) {
       code_generator_set_error(generator,
                                "Invalid local storage size in function '%s'",
-                               function_data->name);
+                               ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1446,7 +1437,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator,
             "Failed to allocate float local metadata in function '%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1457,7 +1448,7 @@ int code_generator_binary_prepare_function_context(
                              &local_storage_size_total) ||
         local_storage_size_total > INT_MAX - local_storage_size) {
       code_generator_set_error(generator, "Stack frame too large in function '%s'",
-                               function_data->name);
+                               ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1466,7 +1457,7 @@ int code_generator_binary_prepare_function_context(
     local_slot_count++;
     if (local_slot_count > (size_t)(INT_MAX / BINARY_FUNCTION_STACK_SLOT_SIZE)) {
       code_generator_set_error(generator, "Too many locals in function '%s'",
-                               function_data->name);
+                               ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1477,7 +1468,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Failed to allocate local slot metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1490,7 +1481,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Failed to allocate cstring local metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1503,7 +1494,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Failed to allocate string local metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1518,7 +1509,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator,
             "Failed to allocate float local metadata in function '%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1541,7 +1532,7 @@ int code_generator_binary_prepare_function_context(
     if (temp_slot_count > (size_t)(INT_MAX / BINARY_FUNCTION_STACK_SLOT_SIZE)) {
       code_generator_set_error(
           generator, "Too many temporaries in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1553,7 +1544,7 @@ int code_generator_binary_prepare_function_context(
                                      instruction->dest.name, offset)) {
       code_generator_set_error(
           generator, "Failed to allocate temp slot metadata in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1598,7 +1589,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator, "Failed to allocate float global metadata in function "
                        "'%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1624,7 +1615,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(
             generator,
             "Failed to allocate float temporary metadata in function '%s'",
-            function_data->name);
+            ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1638,14 +1629,14 @@ int code_generator_binary_prepare_function_context(
   }
 
   if (!code_generator_binary_promote_hot_symbols(generator, context,
-                                                 function_data, ir_function)) {
+                                                 ir_function)) {
     binary_function_context_destroy(context);
     return 0;
   }
 
-  for (size_t i = 0; i < function_data->parameter_count; i++) {
+  for (size_t i = 0; i < ir_function->parameter_count; i++) {
     BinaryGpRegister assigned_register = BINARY_GP_RAX;
-    const char *parameter_name = function_data->parameter_names[i];
+    const char *parameter_name = ir_function->parameter_names[i];
     if (code_generator_binary_symbol_assigned_register(
             generator, context, parameter_name, &assigned_register) &&
         !code_generator_binary_context_add_saved_register(context,
@@ -1653,7 +1644,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Too many callee-saved register-backed symbols in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1674,7 +1665,7 @@ int code_generator_binary_prepare_function_context(
       code_generator_set_error(
           generator,
           "Too many callee-saved register-backed symbols in function '%s'",
-          function_data->name);
+          ir_function->name);
       binary_function_context_destroy(context);
       return 0;
     }
@@ -1685,7 +1676,7 @@ int code_generator_binary_prepare_function_context(
                            &local_home_size)) {
     code_generator_set_error(generator,
                              "Stack frame too large in function '%s'",
-                             function_data->name);
+                             ir_function->name);
     binary_function_context_destroy(context);
     return 0;
   }
@@ -1694,7 +1685,7 @@ int code_generator_binary_prepare_function_context(
       parameter_home_size + local_home_size > INT_MAX - temp_home_size) {
     code_generator_set_error(generator,
                              "Stack frame too large in function '%s'",
-                             function_data->name);
+                             ir_function->name);
     binary_function_context_destroy(context);
     return 0;
   }
@@ -1731,7 +1722,7 @@ int code_generator_binary_prepare_function_context(
         code_generator_set_error(generator,
                                  "Out of memory recording indirect-return "
                                  "slot in function '%s'",
-                                 function_data->name);
+                                 ir_function->name);
         binary_function_context_destroy(context);
         return 0;
       }
@@ -1758,7 +1749,7 @@ int code_generator_binary_prepare_function_context(
   if (!binary_align_up_int(context->raw_frame_size, 16, &context->frame_size)) {
     code_generator_set_error(generator,
                              "Stack frame too large in function '%s'",
-                             function_data->name);
+                             ir_function->name);
     binary_function_context_destroy(context);
     return 0;
   }

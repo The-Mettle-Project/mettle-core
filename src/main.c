@@ -7,7 +7,6 @@
 #include "codegen/binary/mir_annotate.h"
 #include "codegen/binary_emitter.h"
 #include "codegen/binary/arm64_ir.h"
-#include "codegen/program_entry.h"
 #include "codegen/ptx_emitter.h"
 #include "linker/pe_emitter.h"
 #include "string_intern.h"
@@ -3316,8 +3315,6 @@ int compile_file(const char *input_filename, const char *output_filename,
     goto cleanup;
   }
 
-  options->main_wants_argc_argv = program_main_wants_argc_argv(program);
-
   compiler_set_phase(PROFILE_PHASE_MONOMORPHIZE);
   phase_start = compiler_profile_begin(&profile);
   int mono_ok = compile_monomorphize(program, error_reporter);
@@ -3400,6 +3397,7 @@ int compile_file(const char *input_filename, const char *output_filename,
   }
 
   mettle_compiler_ctx_set_ir_program(ir_program);
+  options->main_wants_argc_argv = ir_program->main_wants_argc_argv;
 
   /* --pgo: interpret main() now, before optimization, so the optimizer can
    * consume measured call frequencies instead of static guesses. */

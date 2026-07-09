@@ -44,6 +44,7 @@ static void populate_type_registry(IRProgram *program, TypeChecker *tc) {
         register_named_type(program, tc, fn->parameter_types[p]);
       }
     }
+    register_named_type(program, tc, fn->return_type_name);
     for (size_t i = 0; i < fn->instruction_count; i++) {
       register_named_type(program, tc, fn->instructions[i].text);
     }
@@ -377,10 +378,14 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
         }
         entry.type = mtlc_type_from_frontend(vtype);
         if (!vd->is_extern && vd->initializer) {
-          if (vd->initializer->type == AST_STRING_LITERAL) {
-            StringLiteral *lit = (StringLiteral *)vd->initializer->data;
-            entry.has_initializer = 1;
-            entry.init_string = lit && lit->value ? lit->value : "";
+          if (entry.type && entry.type->kind == MTLC_TYPE_STRING) {
+            if (vd->initializer->type == AST_STRING_LITERAL) {
+              StringLiteral *lit = (StringLiteral *)vd->initializer->data;
+              entry.has_initializer = 1;
+              entry.init_string = lit && lit->value ? lit->value : "";
+            } else {
+              entry.has_unfoldable_initializer = 1;
+            }
           } else {
             NumConst c = {0};
             if (eval_numeric(program, vd->initializer, &c)) {
@@ -392,6 +397,8 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
               } else {
                 entry.init_bits = c.int_value;
               }
+            } else {
+              entry.has_unfoldable_initializer = 1;
             }
           }
         }

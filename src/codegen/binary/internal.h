@@ -195,7 +195,7 @@ typedef struct {
   size_t *indirect_temp_sizes;
   size_t indirect_temp_count;
   size_t indirect_temp_capacity;
-  FunctionDeclaration *function_data;
+  IRFunction *ir_function;
   const char *function_name;
   char *runtime_end_label;
   BinaryDebugLabelExportTable debug_export_labels;
@@ -441,7 +441,6 @@ int binary_function_context_patch_rel32(BinaryFunctionContext *context, size_t d
 uint64_t binary_global_const_bits(long long int_value, double float_value, int is_float);
 int binary_global_const_table_add(const char *name, long long int_value, double float_value, int is_float, int can_inline_load);
 int binary_global_const_table_get(const char *name, uint64_t *value_out);
-int binary_global_const_table_get_numeric( const char *name, BinaryNumericConstant *value_out);
 int binary_global_const_table_rebuild(size_t needed_count);
 void binary_global_const_table_reset(void);
 int binary_immediate_positive_power_of_two_i32(int32_t value, unsigned char *shift_out);
@@ -464,7 +463,7 @@ void binary_symbol_alias_table_destroy(BinarySymbolAliasTable *table);
 const char * binary_symbol_alias_table_get(const BinarySymbolAliasTable *table, const char *name);
 int code_generator_binary_address_consumed_by_adjacent_memory( const IRFunction *function, size_t address_index);
 int code_generator_binary_chain_producer_supported(const char *op);
-int code_generator_binary_collect_global_constants( CodeGenerator *generator, Program *program_data);
+int code_generator_binary_collect_global_constants(CodeGenerator *generator);
 int code_generator_binary_collect_symbol_aliases( CodeGenerator *generator, BinaryFunctionContext *context, IRFunction *ir_function);
 int code_generator_binary_compare_false_jcc(const char *op, unsigned char *opcode_out);
 int code_generator_binary_compare_true_cmov(const char *op, unsigned char *opcode_out);
@@ -501,7 +500,7 @@ int code_generator_binary_emit_local_string_store( CodeGenerator *generator, Bin
 int code_generator_binary_emit_memcpy_inline( CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_emit_new(CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_emit_operand_load( CodeGenerator *generator, BinaryFunctionContext *context, const IROperand *operand, BinaryGpRegister target_register);
-int code_generator_binary_emit_prologue(CodeGenerator *generator, BinaryFunctionContext *context, FunctionDeclaration *function_data);
+int code_generator_binary_emit_prologue(CodeGenerator *generator, BinaryFunctionContext *context);
 int code_generator_binary_emit_profile_enter(CodeGenerator *generator,
                                              BinaryFunctionContext *context,
                                              uint32_t fn_id);
@@ -601,7 +600,6 @@ int code_generator_binary_emit_string_symbol_load( CodeGenerator *generator, Bin
 int code_generator_binary_emit_struct_destination_address( CodeGenerator *generator, BinaryFunctionContext *context, const char *name, BinaryGpRegister target_register);
 int code_generator_binary_emit_symbol_address( CodeGenerator *generator, BinaryFunctionContext *context, const char *symbol_name, int declare_external, BinaryGpRegister target_register);
 int code_generator_binary_emit_unary(CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
-int code_generator_binary_eval_numeric_global_initializer( ASTNode *expression, BinaryNumericConstant *out_value);
 int code_generator_binary_extract_positive_power_of_two( long long value, unsigned int *shift_out, unsigned long long *mask_out);
 /* Emits signed `rax / divisor` or `rax % divisor` via magic multiply when safe.
  * On success with handled_out=1, RAX holds the quotient/remainder. */
@@ -633,9 +631,6 @@ int code_generator_binary_mark_float_symbol( BinaryFunctionContext *context, con
 int code_generator_binary_marked_symbol_float_bits( const BinaryFunctionContext *context, const char *name);
 int code_generator_binary_named_type_float_bits(CodeGenerator *generator, const char *type_name);
 int code_generator_binary_named_type_is_float64(CodeGenerator *generator, const char *type_name, int allow_void);
-void code_generator_binary_numeric_constant_from_double( BinaryNumericConstant *out, double value);
-void code_generator_binary_numeric_constant_from_int( BinaryNumericConstant *out, long long value);
-int code_generator_binary_numeric_constant_is_float( const BinaryNumericConstant *value, ASTNode *expression);
 int code_generator_binary_operand_float_bits( CodeGenerator *generator, BinaryFunctionContext *context, const IROperand *operand);
 int code_generator_binary_operand_is_known_float64( CodeGenerator *generator, BinaryFunctionContext *context, const IROperand *operand);
 int code_generator_binary_operand_mentions_symbol( const IROperand *operand, const char *name);
@@ -643,8 +638,8 @@ int code_generator_binary_operand_mentions_symbol_or_alias( const BinaryFunction
 int code_generator_binary_operand_uses_temp(const IROperand *operand, const char *name);
 int code_generator_binary_operator_is_commutative(const char *op);
 int code_generator_binary_parameter_is_indirect( CodeGenerator *generator, BinaryFunctionContext *context, const char *name);
-int code_generator_binary_prepare_function_context( CodeGenerator *generator, FunctionDeclaration *function_data, IRFunction *ir_function, BinaryFunctionContext *context);
-int code_generator_binary_promote_hot_symbols( CodeGenerator *generator, BinaryFunctionContext *context, FunctionDeclaration *function_data, IRFunction *ir_function);
+int code_generator_binary_prepare_function_context( CodeGenerator *generator, IRFunction *ir_function, BinaryFunctionContext *context);
+int code_generator_binary_promote_hot_symbols( CodeGenerator *generator, BinaryFunctionContext *context, IRFunction *ir_function);
 int code_generator_binary_resolve_fixups(CodeGenerator *generator, BinaryFunctionContext *context, size_t return_offset);
 int code_generator_binary_resolved_type_float_bits(MtlcType *type);
 int code_generator_binary_resolved_type_is_abi_supported(MtlcType *type, int allow_void);
@@ -691,14 +686,12 @@ int code_generator_binary_type_is_gp_promotable(MtlcType *type);
 int code_generator_binary_type_is_string(MtlcType *type);
 int code_generator_binary_validate_call(CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_validate_indirect_call( CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
-int code_generator_binary_validate_signature(CodeGenerator *generator, FunctionDeclaration *function_data, IRFunction *ir_function);
+int code_generator_binary_validate_signature(CodeGenerator *generator, IRFunction *ir_function);
 int code_generator_binary_x86_to_gp_register(x86Register source, BinaryGpRegister *out);
-int code_generator_declare_binary_externs(CodeGenerator *generator, Program *program_data);
+int code_generator_declare_binary_externs(CodeGenerator *generator);
 int code_generator_emit_binary_function(CodeGenerator *generator,
-                                        FunctionDeclaration *function_data,
-                                        IRFunction *ir_function,
-                                        ASTNode *function_declaration);
-int code_generator_emit_binary_global_variable(CodeGenerator *generator, VarDeclaration *var_data);
+                                        IRFunction *ir_function);
+int code_generator_emit_binary_global_variable(CodeGenerator *generator, const IRModuleSymbol *sym);
 int code_generator_generate_program_binary_object(CodeGenerator *generator, ASTNode *program);
 int simd_emit_xmm_mem_disp(BinaryCodeBuffer *b, unsigned char opcode, int xmm, int gpr, int displacement);
 int simd_emit_prefixed_xmm_mem_disp(BinaryCodeBuffer *b, unsigned char prefix, unsigned char opcode, int xmm, int gpr, int displacement);

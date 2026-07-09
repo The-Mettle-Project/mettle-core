@@ -9,9 +9,7 @@
 #include <string.h>
 
 int code_generator_emit_binary_function(CodeGenerator *generator,
-                                               FunctionDeclaration *function_data,
-                                               IRFunction *ir_function,
-                                               ASTNode *function_declaration) {
+                                               IRFunction *ir_function) {
   BinaryEmitter *emitter = NULL;
   BinaryFunctionContext context = {0};
   size_t text_section = 0;
@@ -19,23 +17,22 @@ int code_generator_emit_binary_function(CodeGenerator *generator,
   size_t function_offset = 0;
   size_t return_offset = 0;
 
-  if (!generator || !function_data || !ir_function) {
+  if (!generator || !ir_function) {
     return 0;
   }
 
-  if (!code_generator_binary_validate_signature(generator, function_data,
-                                                ir_function)) {
+  if (!code_generator_binary_validate_signature(generator, ir_function)) {
     return 0;
   }
 
-  if (!code_generator_binary_prepare_function_context(generator, function_data,
-                                                      ir_function, &context)) {
+  if (!code_generator_binary_prepare_function_context(generator, ir_function,
+                                                      &context)) {
     return 0;
   }
 
   free(generator->current_function_name);
-  if (function_data->name) {
-    generator->current_function_name = strdup(function_data->name);
+  if (ir_function->name) {
+    generator->current_function_name = strdup(ir_function->name);
     if (!generator->current_function_name) {
       code_generator_set_error(generator,
                                "Out of memory while tracking function name");
@@ -55,27 +52,24 @@ int code_generator_emit_binary_function(CodeGenerator *generator,
       code_generator_set_error(generator,
                                "Out of memory while tracking function debug "
                                "range in '%s'",
-                               function_data->name);
+                               ir_function->name);
       binary_function_context_destroy(&context);
       return 0;
     }
     code_generator_add_runtime_function_mapping(
-        generator, function_data->name, function_data->name,
+        generator, ir_function->name, ir_function->name,
         context.runtime_end_label,
-        function_declaration ? function_declaration->location.line : 0,
-        function_declaration ? function_declaration->location.column : 0,
-        code_generator_runtime_filename(
-            generator, function_declaration
-                                 ? function_declaration->location.filename
-                                 : NULL));
+        ir_function->location.line, ir_function->location.column,
+        code_generator_runtime_filename(generator,
+                                        ir_function->location.filename));
   }
 
   /* Route fully-supported leaf integer functions through the MIR + linear-scan
    * register allocator The MIR path fills context.code
    * with a complete prologue..epilogue and resolves its own label fixups; all
    * downstream emission (.text append, relocations, debug symbols) is shared. */
-  if (mir_function_is_eligible(generator, function_data, ir_function)) {
-    if (!code_generator_binary_emit_function_via_mir(generator, function_data,
+  if (mir_function_is_eligible(generator, ir_function)) {
+    if (!code_generator_binary_emit_function_via_mir(generator,
                                                      ir_function, &context)) {
       binary_function_context_destroy(&context);
       return 0;
@@ -92,13 +86,12 @@ int code_generator_emit_binary_function(CodeGenerator *generator,
   size_t annot_base = context.code.size;
   if (annot) {
     mir_annotate_begin_function(
-        function_data->name, ir_function,
-        function_data->body ? function_data->body->location.filename : NULL,
-        function_data->body ? function_data->body->location.line : 0);
+        ir_function->name, ir_function,
+        ir_function->location.filename, ir_function->location.line);
     mir_annotate_note_backend("baseline (fallback)", NULL);
   }
 
-  if (!code_generator_binary_emit_prologue(generator, &context, function_data)) {
+  if (!code_generator_binary_emit_prologue(generator, &context)) {
     if (annot) mir_annotate_end_function();
     binary_function_context_destroy(&context);
     return 0;
@@ -334,7 +327,7 @@ mir_shared_append:
   }
 
   function_offset = section->size;
-  if (!binary_emitter_define_symbol(emitter, function_data->name,
+  if (!binary_emitter_define_symbol(emitter, ir_function->name,
                                     BINARY_SYMBOL_GLOBAL, text_section,
                                     function_offset, context.code.size) ||
       !binary_emitter_append_bytes(emitter, text_section, context.code.data,
@@ -401,176 +394,79 @@ int code_generator_generate_program_binary_object(CodeGenerator *generator,
 
   binary_global_const_table_reset();
   binary_ir_function_index_reset();
-  if (!code_generator_binary_collect_global_constants(generator, program_data)) {
+  if (!code_generator_binary_collect_global_constants(generator)) {
     return 0;
   }
 
-  if (!code_generator_declare_binary_externs(generator, program_data)) {
+  if (!code_generator_declare_binary_externs(generator)) {
     return 0;
   }
 
   /* --pgo code layout: emit measured-hot functions first (main leading) so
    * the hot working set shares I-cache lines and iTLB pages, cold glue sinks
    * to the tail. Zero-run: the frequencies come from the compile-time
-   * interpretation of main(), no training run. Only the FUNCTION declaration
-   * slots are permuted among themselves; every other declaration keeps its
-   * position. Without a profile the order is untouched. */
+   * interpretation of main(), no training run. Without a profile the order is
+   * untouched. */
+  size_t function_count = generator->ir_program->function_count;
   size_t *emit_order = NULL;
-  if (ir_pgo_enabled() && program_data->declaration_count > 1) {
-    size_t n = program_data->declaration_count;
-    emit_order = (size_t *)malloc(n * sizeof(size_t));
-    size_t *fn_slots = (size_t *)malloc(n * sizeof(size_t));
-    long long *heat = (long long *)malloc(n * sizeof(long long));
-    if (emit_order && fn_slots && heat) {
-      size_t fn_count = 0;
-      for (size_t i = 0; i < n; i++) {
+  if (ir_pgo_enabled() && function_count > 1) {
+    emit_order = (size_t *)malloc(function_count * sizeof(size_t));
+    long long *heat = (long long *)malloc(function_count * sizeof(long long));
+    if (emit_order && heat) {
+      for (size_t i = 0; i < function_count; i++) {
         emit_order[i] = i;
-        ASTNode *d = program_data->declarations[i];
-        if (d && d->type == AST_FUNCTION_DECLARATION && d->data) {
-          FunctionDeclaration *fd = (FunctionDeclaration *)d->data;
-          if (fd->name && !fd->is_extern && fd->body) {
-            fn_slots[fn_count] = i;
-            heat[fn_count] =
-                (strcmp(fd->name, "main") == 0)
-                    ? LLONG_MAX
-                    : ir_pgo_callee_calls(fd->name);
-            fn_count++;
-          }
-        }
+        IRFunction *fn = generator->ir_program->functions[i];
+        heat[i] = (fn && fn->name && strcmp(fn->name, "main") == 0)
+                      ? LLONG_MAX
+                      : (fn && fn->name ? ir_pgo_callee_calls(fn->name) : 0);
       }
       /* Stable insertion sort of the function indices by heat, descending:
        * ties (and cold/-1) keep declaration order. */
-      for (size_t i = 1; i < fn_count; i++) {
-        size_t slot = fn_slots[i];
+      for (size_t i = 1; i < function_count; i++) {
+        size_t slot = emit_order[i];
         long long h = heat[i];
         size_t j = i;
         while (j > 0 && heat[j - 1] < h) {
-          fn_slots[j] = fn_slots[j - 1];
+          emit_order[j] = emit_order[j - 1];
           heat[j] = heat[j - 1];
           j--;
         }
-        fn_slots[j] = slot;
+        emit_order[j] = slot;
         heat[j] = h;
-      }
-      /* Redistribute the sorted functions into the function slots. */
-      size_t next = 0;
-      for (size_t i = 0; i < n; i++) {
-        ASTNode *d = program_data->declarations[i];
-        if (d && d->type == AST_FUNCTION_DECLARATION && d->data) {
-          FunctionDeclaration *fd = (FunctionDeclaration *)d->data;
-          if (fd->name && !fd->is_extern && fd->body) {
-            emit_order[i] = fn_slots[next++];
-          }
-        }
       }
     } else {
       free(emit_order);
       emit_order = NULL;
     }
-    free(fn_slots);
     free(heat);
   }
 
-  for (size_t i = 0; i < program_data->declaration_count; i++) {
-    ASTNode *declaration =
-        program_data->declarations[emit_order ? emit_order[i] : i];
-    if (!declaration) {
+  for (size_t i = 0; i < function_count; i++) {
+    IRFunction *ir_function =
+        generator->ir_program->functions[emit_order ? emit_order[i] : i];
+    if (!ir_function) {
       continue;
     }
-
-    switch (declaration->type) {
-    case AST_FUNCTION_DECLARATION: {
-      FunctionDeclaration *function_data =
-          (FunctionDeclaration *)declaration->data;
-      IRFunction *ir_function = NULL;
-
-      if (!function_data || !function_data->name) {
-        code_generator_set_error(generator,
-                                 "Malformed function declaration in AST");
-        return 0;
-      }
-      if (function_data->is_extern || !function_data->body) {
-        continue;
-      }
-
-      ir_function = code_generator_find_ir_function_binary(generator,
-                                                           function_data->name);
-      if (!ir_function) {
-        /* After dead-function elimination a missing IR body means the
-         * function was unreachable from main — skip it. Without that pass a
-         * missing body is a real lowering bug and stays a hard error. */
-        if (generator->ir_program->dead_functions_eliminated) {
-          continue;
-        }
-        code_generator_set_error(generator,
-                                 "No IR body found for function '%s'",
-                                 function_data->name);
-        return 0;
-      }
-
-      if (!code_generator_emit_binary_function(generator, function_data,
-                                               ir_function, declaration)) {
-        return 0;
-      }
-    } break;
-    case AST_STRUCT_DECLARATION:
-    case AST_ENUM_DECLARATION:
-      break;
-    case AST_FUNCTION_CALL: {
-      CallExpression *call = (CallExpression *)declaration->data;
-      if (call && call->function_name &&
-          strcmp(call->function_name, "static_assert") == 0) {
-        break;
-      }
-      code_generator_set_error(
-          generator,
-          "Direct object backend encountered unsupported top-level call '%s'",
-          (call && call->function_name) ? call->function_name : "<unknown>");
-      return 0;
-    }
-    case AST_VAR_DECLARATION: {
-      VarDeclaration *var_data = (VarDeclaration *)declaration->data;
-      if (!var_data || !var_data->name) {
-        code_generator_set_error(generator,
-                                 "Malformed global variable declaration in AST");
-        return 0;
-      }
-      if (var_data->is_extern) {
-        break;
-      }
-      // An integer `const` folds to a SYMBOL_CONSTANT at every use site and
-      // carries no storage. A non-integer `const` (float/string/aggregate) is
-      // registered as an immutable variable instead and DOES need storage,
-      // since the IR references it via a RIP-relative load like any global.
-      if (var_data->is_const) {
-        const CgSym *const_symbol =
-            generator->symbol_table
-                ? code_generator_lookup_symbol(generator, var_data->name)
-                : NULL;
-        if (!const_symbol || const_symbol->kind == SYMBOL_CONSTANT) {
-          break;
-        }
-      }
-      if (!code_generator_emit_binary_global_variable(generator, var_data)) {
-        return 0;
-      }
-    }
-      break;
-    case AST_INLINE_ASM:
-      code_generator_set_error(
-          generator,
-          "Direct object backend does not yet support inline assembly");
-      return 0;
-    default:
-      code_generator_set_error(
-          generator,
-          "Direct object backend encountered unsupported declaration type %d",
-          declaration->type);
-      free(emit_order);
+    if (!code_generator_emit_binary_function(generator, ir_function)) {
       return 0;
     }
   }
   free(emit_order);
+
+  /* Global variables: an integer `const` folds to a SYMBOL_CONSTANT at every
+   * use site and carries no storage (IR_MODSYM_CONSTANT, not represented
+   * here); a non-integer `const` (float/string/aggregate) is registered as an
+   * immutable variable instead and DOES need storage, since the IR references
+   * it via a RIP-relative load like any global (IR_MODSYM_VARIABLE). */
+  for (size_t i = 0; i < generator->ir_program->module_symbol_count; i++) {
+    const IRModuleSymbol *sym = &generator->ir_program->module_symbols[i];
+    if (sym->kind != IR_MODSYM_VARIABLE || sym->is_extern) {
+      continue;
+    }
+    if (!code_generator_emit_binary_global_variable(generator, sym)) {
+      return 0;
+    }
+  }
 
   if ((generator->profile_runtime || generator->debug_hooks) &&
       !code_generator_binary_emit_profile_tables(generator)) {
