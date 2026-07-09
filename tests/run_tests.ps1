@@ -2192,27 +2192,6 @@ catch {
   Write-CaseResult -Name "debug_hooks_standalone" -Passed $false -Reason $_.Exception.Message
 }
 
-# Debugger protocol end-to-end: node hosts the pipe and drives a real session
-# (entry stop, breakpoint, stack, variables, step in/out, eval, and a live
-# variable WRITE asserted on the program's final stdout).
-$total++
-try {
-  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $nodeCmd) {
-    Write-CaseResult -Name "debug_protocol" -Passed $true -Reason "skipped (node not found)"
-  } else {
-    $protoOut = & $nodeCmd.Source "mettle-syntax\scripts\test-debug-protocol.js" $CompilerPath 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
-      throw "Protocol test failed: $protoOut"
-    }
-    Write-CaseResult -Name "debug_protocol" -Passed $true
-  }
-}
-catch {
-  $failed++
-  Write-CaseResult -Name "debug_protocol" -Passed $false -Reason $_.Exception.Message
-}
-
 # --explain "since last build" diffing + --explain-json: recompiling unchanged
 # source reports no changes; de-inlining `scale` between builds reports the
 # with_call loop as REGRESSED; the .explain.json sidecar parses and agrees.

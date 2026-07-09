@@ -18,13 +18,12 @@
  * gpu_tid_/ntid_/ctaid_/nctaid_ index intrinsics, gpu_barrier(), the f32 math
  * intrinsics, h2f/f2h fp16 conversion, and the unsigned atomics.
  *
- * SPIR-V mandates *structured* control flow (unlike PTX's free `bra`). Because
- * the source-level control flow is always structured, every function's CFG is
- * reducible; the emitter lowers each function to a single OpSwitch state-machine
- * dispatch loop (one OpLoopMerge + one OpSelectionMerge for the whole function),
- * which is a correct-by-construction structuring of any reducible CFG. Values
- * that cross basic blocks live in Function-storage variables (reg2mem); a
- * driver's SPIR-V consumer promotes them back to registers.
+ * Control flow maps directly onto SPIR-V blocks (OpBranch /
+ * OpBranchConditional), exactly like PTX `bra`: SPIR-V's structured-control-flow
+ * rules are mandated only by the Shader capability, and Kernel (OpenCL) modules
+ * may branch freely (spirv-val --target-env opencl1.2 confirms). Values that
+ * cross basic blocks live in Function-storage variables (reg2mem); a driver's
+ * SPIR-V consumer promotes them back to registers.
  *
  * Returns 1 on success. On failure returns 0 and, if error is non-NULL, sets
  * *error to a malloc'd message the caller must free. */

@@ -1,7 +1,7 @@
 name: CI
 
 # Fast PR signal plus deeper compiler guards:
-# - workflow/script/package hygiene catches broken automation and editor support;
+# - workflow/script hygiene catches broken automation;
 # - Windows GCC runs the full ABI/runtime/regression suite and deterministic fuzz gate;
 # - Windows Clang compile-only catches compiler portability warnings quickly;
 # - Linux GCC/Clang exercise the ELF/SysV backend;
@@ -29,11 +29,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
 
       - name: Validate GitHub Actions workflows
         shell: bash
@@ -71,10 +66,6 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
-
-      - name: Validate VS Code extension package
-        working-directory: mettle-syntax
-        run: npm run check
 
   build-and-test:
     name: Build & test (windows gcc)

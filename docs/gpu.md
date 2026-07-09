@@ -153,10 +153,11 @@ built-ins (mapped to the OpenCL work-item built-ins: `thread`→`LocalInvocation
 `gpu_barrier()` (→ `OpControlBarrier`), the f32 math intrinsics (→ `OpExtInst`
 `OpenCL.std`), `h2f`/`f2h`, and the unsigned atomics.
 
-Because SPIR-V mandates *structured* control flow (there is no free branch),
-each kernel is lowered to a single `OpSwitch` state-machine dispatch loop — a
-correct-by-construction structuring of any reducible control-flow graph, which
-a driver's SPIR-V consumer re-optimizes at load time.
+Control flow maps directly onto SPIR-V basic blocks (`OpBranch` /
+`OpBranchConditional`), exactly as the PTX path maps it onto `bra`: SPIR-V's
+structured-control-flow rules (`OpSelectionMerge`/`OpLoopMerge`) are mandated
+only by the `Shader` capability — `Kernel` (OpenCL) modules may branch freely,
+which `spirv-val --target-env opencl1.2` confirms.
 
 ## Notes and limits
 

@@ -28,7 +28,6 @@ tests/          regression tests; run_tests.ps1 on Windows
 tools/          ELF tests, benchmarks, fuzz scripts, ML optimizer
 examples/       runnable samples and benchmarks
 docs/           language and tooling reference
-mettle-syntax/  VS Code extension
 ```
 
 ## Building the compiler

@@ -8,24 +8,15 @@
  *     buffer each section separately and concatenate at the end, so emission
  *     order need not match layout order.
  *
- *  2. It mandates *structured* control flow -- there is no free `bra`. Every
- *     function is lowered to a single OpSwitch state-machine dispatch loop:
- *
- *         entry:   <locals>; state = 0; branch header
- *         header:  OpLoopMerge exit, continue; branch switch
- *         switch:  s = load state; OpSelectionMerge merge; OpSwitch s -> case_i
- *         case_i:  <block i body>; state = <successor>; branch merge
- *         merge:   branch continue
- *         continue:branch header
- *         exit:    OpReturn
- *
- *     This is a correct-by-construction structuring of ANY reducible CFG (the
- *     source is always structured, so the CFG always is): the whole function
- *     needs exactly one OpLoopMerge and one OpSelectionMerge, and short-circuit
- *     `&&`/`||` branch chains, nested loops and breaks all fall out for free. A
- *     conditional branch picks its successor state with OpSelect (no nested
- *     merges). Every IR value lives in a Function-storage variable (reg2mem) so
- *     there are never cross-block SSA references; a driver's SPIR-V consumer
+ *  2. Control flow maps DIRECTLY: the IR's label/branch stream is cut into
+ *     basic blocks and each becomes one SPIR-V block -- IR_OP_JUMP is OpBranch,
+ *     IR_OP_BRANCH_ZERO/_EQ are OpBranchConditional, IR_OP_RETURN is OpReturn.
+ *     SPIR-V's structured-control-flow rules (OpSelectionMerge/OpLoopMerge)
+ *     are mandated only by the Shader capability; Kernel (OpenCL) modules may
+ *     branch freely, exactly like PTX `bra` -- spirv-val --target-env opencl1.2
+ *     accepts arbitrary unstructured branches and back-edges. Every IR value
+ *     lives in a Function-storage variable (reg2mem) so there are never
+ *     cross-block SSA references (no OpPhi); a driver's SPIR-V consumer
  *     promotes them back to registers.
  *
  * Pointers follow the PTX model: a kernel pointer parameter is an OpenCL
@@ -117,11 +108,9 @@ enum {
   Op_AtomicIAdd = 234,
   Op_AtomicUMin = 237,
   Op_Decorate = 71,
-  Op_LoopMerge = 246,
-  Op_SelectionMerge = 247,
   Op_Label = 248,
   Op_Branch = 249,
-  Op_Switch = 251,
+  Op_BranchConditional = 250,
   Op_Return = 253
 };
 
@@ -1091,7 +1080,7 @@ static void emit_body_instr(SpvFn *fn, const IRInstruction *in) {
   }
 }
 
-/* ============================ structurizer ============================ */
+/* ============================ CFG emission ============================ */
 typedef struct {
   size_t lo, hi;             /* instruction range [lo, hi) */
   const char *label;         /* leading label name, or NULL */
@@ -1221,17 +1210,13 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
 
   register_values(&fn, func);
 
-  /* ---- ids for the dispatch skeleton ---- */
+  /* ---- ids: entry, one label per IR block, a shared fall-off-the-end exit ---- */
   uint32_t func_id = new_id(m);
   uint32_t entry_id = new_id(m);
-  uint32_t header_id = new_id(m);
-  uint32_t switch_id = new_id(m);
-  uint32_t merge_id = new_id(m);
-  uint32_t cont_id = new_id(m);
   uint32_t exit_id = new_id(m);
-  uint32_t state_var = new_id(m);
-  uint32_t *case_id = calloc(nblocks ? nblocks : 1, sizeof(uint32_t));
-  for (size_t i = 0; i < nblocks; i++) case_id[i] = new_id(m);
+  int exit_used = 0;
+  uint32_t *block_id = calloc(nblocks ? nblocks : 1, sizeof(uint32_t));
+  for (size_t i = 0; i < nblocks; i++) block_id[i] = new_id(m);
 
   /* ---- parameter + function types ---- */
   uint32_t voidt = type_void(m);
@@ -1277,11 +1262,8 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
     emitv(&m->functions, Op_FunctionParameter, 2, ptypes[p], pids[p]);
   }
 
-  /* ---- entry block: declare variables, shadow params, init state ---- */
+  /* ---- entry block: declare variables, shadow params ---- */
   emitv(&m->functions, Op_Label, 1, entry_id);
-  uint32_t u32t = type_int(m, 32);
-  uint32_t state_ptr_t = type_pointer(m, SC_Function, u32t);
-  emitv(&m->functions, Op_Variable, 3, state_ptr_t, state_var, (unsigned)SC_Function);
   for (size_t i = 0; i < fn.nbinds; i++) {
     SpvBind *b = &fn.binds[i];
     uint32_t vt = kind_type(m, b->d.kind);
@@ -1303,43 +1285,24 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
       emitv(&m->functions, Op_Store, 2, b->var_id, pids[p]);
     }
   }
-  emitv(&m->functions, Op_Store, 2, state_var, const_u32(m, 0));
-  emitv(&m->functions, Op_Branch, 1, header_id);
-
-  /* ---- loop header + switch dispatch ---- */
-  emitv(&m->functions, Op_Label, 1, header_id);
-  emitv(&m->functions, Op_LoopMerge, 3, exit_id, cont_id, 0u);
-  emitv(&m->functions, Op_Branch, 1, switch_id);
-  emitv(&m->functions, Op_Label, 1, switch_id);
-  uint32_t st = new_id(m);
-  emitv(&m->functions, Op_Load, 3, u32t, st, state_var);
-  emitv(&m->functions, Op_SelectionMerge, 2, merge_id, 0u);
-  {
-    Wb sw = {0};
-    wb_push(&sw, st);
-    wb_push(&sw, exit_id); /* default: fall out of the loop */
-    for (size_t i = 0; i < nblocks; i++) {
-      wb_push(&sw, (uint32_t)i);
-      wb_push(&sw, case_id[i]);
-    }
-    emit_ops(&m->functions, Op_Switch, &sw);
-    wb_free(&sw);
+  if (nblocks > 0) {
+    emitv(&m->functions, Op_Branch, 1, block_id[0]);
+  } else {
+    emitv(&m->functions, Op_Return, 0);
   }
 
-  /* ---- one SPIR-V block per IR block ---- */
+  /* ---- one SPIR-V block per IR block, branches mapped directly ---- */
   for (size_t i = 0; i < nblocks && !m->error; i++) {
     SpvBlock *bl = &blocks[i];
-    emitv(&m->functions, Op_Label, 1, case_id[i]);
+    emitv(&m->functions, Op_Label, 1, block_id[i]);
     for (size_t j = bl->lo; j < bl->hi && !m->error; j++) {
       const IRInstruction *in = &func->instructions[j];
       if (in == bl->term) break; /* terminator handled below */
       emit_body_instr(&fn, in);
     }
-    /* successor: set state and branch to the selection merge (or the loop
-     * exit for returns / the fall-off-the-end case). */
     const IRInstruction *term = bl->term;
     if (term && term->op == IR_OP_RETURN) {
-      emitv(&m->functions, Op_Branch, 1, exit_id);
+      emitv(&m->functions, Op_Return, 0);
     } else if (term && term->op == IR_OP_JUMP) {
       long t = block_of_label(blocks, nblocks, term->text);
       if (t < 0) {
@@ -1347,51 +1310,43 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
                   term->text ? term->text : "?");
         break;
       }
-      emitv(&m->functions, Op_Store, 2, state_var, const_u32(m, (uint32_t)t));
-      emitv(&m->functions, Op_Branch, 1, merge_id);
+      emitv(&m->functions, Op_Branch, 1, block_id[t]);
     } else if (term &&
                (term->op == IR_OP_BRANCH_ZERO || term->op == IR_OP_BRANCH_EQ)) {
       long taken = block_of_label(blocks, nblocks, term->text);
-      long fall = (i + 1 < nblocks) ? (long)(i + 1) : -1;
       if (taken < 0) {
         mod_error(m, "SPIR-V: branch to unknown label '%s'",
                   term->text ? term->text : "?");
         break;
       }
-      uint32_t fall_id = const_u32(m, fall >= 0 ? (uint32_t)fall : 0);
-      uint32_t taken_id = const_u32(m, (uint32_t)taken);
-      uint32_t cond = branch_cond_bool(&fn, term);
-      /* BRANCH_ZERO: take target when cond is false -> select(cond, fall, take).
-       * BRANCH_EQ:   take target when cond is true  -> select(cond, take, fall). */
-      uint32_t a = (term->op == IR_OP_BRANCH_ZERO) ? fall_id : taken_id;
-      uint32_t b = (term->op == IR_OP_BRANCH_ZERO) ? taken_id : fall_id;
-      uint32_t next = new_id(m);
-      emitv(&m->functions, Op_Select, 5, u32t, next, cond, a, b);
-      if (fall < 0) {
-        /* no fall-through block: a false BRANCH_ZERO / false BRANCH_EQ falls
-         * off the end -> exit. Store then branch; the exit path is fine. */
-      }
-      emitv(&m->functions, Op_Store, 2, state_var, next);
-      emitv(&m->functions, Op_Branch, 1, merge_id);
-    } else {
-      /* fallthrough: advance to the next block, or exit at the end */
+      uint32_t fall_id;
       if (i + 1 < nblocks) {
-        emitv(&m->functions, Op_Store, 2, state_var,
-              const_u32(m, (uint32_t)(i + 1)));
-        emitv(&m->functions, Op_Branch, 1, merge_id);
+        fall_id = block_id[i + 1];
       } else {
-        emitv(&m->functions, Op_Branch, 1, exit_id);
+        fall_id = exit_id; /* not-taken edge falls off the end -> return */
+        exit_used = 1;
+      }
+      uint32_t taken_id = block_id[taken];
+      uint32_t cond = branch_cond_bool(&fn, term);
+      /* BRANCH_ZERO's condition is (value != 0): take the target when FALSE.
+       * BRANCH_EQ's condition is (lhs == rhs):   take the target when TRUE. */
+      uint32_t t_true = (term->op == IR_OP_BRANCH_ZERO) ? fall_id : taken_id;
+      uint32_t t_false = (term->op == IR_OP_BRANCH_ZERO) ? taken_id : fall_id;
+      emitv(&m->functions, Op_BranchConditional, 3, cond, t_true, t_false);
+    } else {
+      /* fallthrough: continue into the next block, or return at the end */
+      if (i + 1 < nblocks) {
+        emitv(&m->functions, Op_Branch, 1, block_id[i + 1]);
+      } else {
+        emitv(&m->functions, Op_Return, 0);
       }
     }
   }
 
-  /* ---- selection merge -> loop continue -> back-edge; then exit ---- */
-  emitv(&m->functions, Op_Label, 1, merge_id);
-  emitv(&m->functions, Op_Branch, 1, cont_id);
-  emitv(&m->functions, Op_Label, 1, cont_id);
-  emitv(&m->functions, Op_Branch, 1, header_id);
-  emitv(&m->functions, Op_Label, 1, exit_id);
-  emitv(&m->functions, Op_Return, 0);
+  if (exit_used) {
+    emitv(&m->functions, Op_Label, 1, exit_id);
+    emitv(&m->functions, Op_Return, 0);
+  }
   emitv(&m->functions, Op_FunctionEnd, 0);
 
   /* ---- entry point (with the BuiltIn Input vars this kernel touched) ---- */
@@ -1411,7 +1366,7 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
   free(fn.binds);
   free(starts);
   free(blocks);
-  free(case_id);
+  free(block_id);
   free(ptypes);
   free(pids);
   free(pdesc);
