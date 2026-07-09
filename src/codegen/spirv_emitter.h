@@ -1,0 +1,34 @@
+#ifndef SPIRV_EMITTER_H
+#define SPIRV_EMITTER_H
+
+#include "code_generator.h"
+#include "ir/ir.h"
+#include <stdio.h>
+
+/* Lower an IR program to a SPIR-V binary module (one OpEntryPoint per function,
+ * execution model Kernel), targeting the OpenCL 1.2 execution environment:
+ * Physical64 addressing, the Kernel capability, and the OpenCL memory model.
+ * This is the flavor that fits Mettle's GPU kernel ABI -- kernels take raw
+ * typed pointers as parameters and perform pointer arithmetic + loads/stores
+ * plus the gpu_* index intrinsics, i.e. the CUDA/OpenCL model. (Vulkan/Logical
+ * SPIR-V would force a descriptor-buffer redesign of the kernel model.)
+ *
+ * The emitter is the SPIR-V sibling of ptx_emitter.c and covers the same IR
+ * subset: scalar/pointer parameters, locals, load/store, binary/unary/cast, the
+ * gpu_tid_/ntid_/ctaid_/nctaid_ index intrinsics, gpu_barrier(), the f32 math
+ * intrinsics, h2f/f2h fp16 conversion, and the unsigned atomics.
+ *
+ * SPIR-V mandates *structured* control flow (unlike PTX's free `bra`). Because
+ * the source-level control flow is always structured, every function's CFG is
+ * reducible; the emitter lowers each function to a single OpSwitch state-machine
+ * dispatch loop (one OpLoopMerge + one OpSelectionMerge for the whole function),
+ * which is a correct-by-construction structuring of any reducible CFG. Values
+ * that cross basic blocks live in Function-storage variables (reg2mem); a
+ * driver's SPIR-V consumer promotes them back to registers.
+ *
+ * Returns 1 on success. On failure returns 0 and, if error is non-NULL, sets
+ * *error to a malloc'd message the caller must free. */
+int spirv_emit_program(IRProgram *program, CodeGenerator *generator, FILE *out,
+                       char **error);
+
+#endif /* SPIRV_EMITTER_H */

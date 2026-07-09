@@ -131,10 +131,37 @@ The host links `nvcuda` (the OS driver), exactly as a Mettle program links
 `kernel32` or libc; there is no bundled CUDA DLL. At run time the driver JITs
 the PTX to SASS for the installed GPU.
 
+## SPIR-V (OpenCL) target
+
+The same kernels compile to **SPIR-V** with `--emit-spirv`, targeting the
+OpenCL 1.2 execution environment (Physical64 addressing, the `Kernel`
+capability, the OpenCL memory model). This is the flavor that fits Mettle's
+kernel ABI unchanged — kernels take raw typed pointers and do pointer
+arithmetic + loads/stores, which is the OpenCL/CUDA model, not the Vulkan
+descriptor-buffer model:
+
+```bash
+mettle --emit-spirv kernels.mettle -o kernels.spv
+```
+
+The output is a binary SPIR-V module (one `OpEntryPoint … Kernel` per kernel)
+that an OpenCL runtime consumes with `clCreateProgramWithIL`. The same source
+constructs as the PTX path are supported — arithmetic, comparisons, `if`/`while`
+(including `&&`/`||` and nesting), pointer indexing, casts, the `gpu_*` index
+built-ins (mapped to the OpenCL work-item built-ins: `thread`→`LocalInvocationId`,
+`block`→`WorkgroupId`, `block_dim`→`WorkgroupSize`, `grid_dim`→`NumWorkgroups`),
+`gpu_barrier()` (→ `OpControlBarrier`), the f32 math intrinsics (→ `OpExtInst`
+`OpenCL.std`), `h2f`/`f2h`, and the unsigned atomics.
+
+Because SPIR-V mandates *structured* control flow (there is no free branch),
+each kernel is lowered to a single `OpSwitch` state-machine dispatch loop — a
+correct-by-construction structuring of any reducible control-flow graph, which
+a driver's SPIR-V consumer re-optimizes at load time.
+
 ## Notes and limits
 
-- The emitter targets `.target sm_90`, which is forward-compatible: the driver
-  JITs it to newer architectures (e.g. sm_120 / Blackwell).
+- The PTX emitter targets `.target sm_90`, which is forward-compatible: the
+  driver JITs it to newer architectures (e.g. sm_120 / Blackwell).
 - `dispatch` grids are 1-D for now (`grid`, `block`). Multi-dimensional launches
   go through `cuLaunchKernel` in `std/gpu` directly.
 - Kernels and host code live in **separate files** (the kernel file is compiled

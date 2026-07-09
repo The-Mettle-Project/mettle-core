@@ -10,7 +10,7 @@ Any frontend that can lower into the IR can drive the pipeline.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 &nbsp;![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-2b6cb0.svg)
-&nbsp;![Targets](https://img.shields.io/badge/targets-x86--64%20%7C%20ARM64%20%7C%20PTX-2f855a.svg)
+&nbsp;![Targets](https://img.shields.io/badge/targets-x86--64%20%7C%20ARM64%20%7C%20PTX%20%7C%20SPIR--V-2f855a.svg)
 &nbsp;![Dependencies](https://img.shields.io/badge/dependencies-no%20VM%20%C2%B7%20hand--encoded%20ISA-c53030.svg)
 
 [**API**](include/mtlc/)
@@ -28,7 +28,7 @@ This repository is building **libmtlc**: a reusable native compiler backend. Fro
 
 | Layer | Role |
 |-------|------|
-| **libmtlc** | Backend library: IR, optimizers, codegen (x86-64 / ARM64 / PTX), PE/ELF linking. Public C headers in [`include/mtlc/`](include/mtlc/). Ships as `bin/mtlc.lib` (Windows) or `bin/libmtlc.a` (Linux). |
+| **libmtlc** | Backend library: IR, optimizers, codegen (x86-64 / ARM64 / PTX / SPIR-V), PE/ELF linking. Public C headers in [`include/mtlc/`](include/mtlc/). Ships as `bin/mtlc.lib` (Windows) or `bin/libmtlc.a` (Linux). |
 | **mettle** | Reference language + driver. Lowers `.mettle` into libmtlc IR, then runs the backend pipeline. |
 
 ## Why
@@ -96,7 +96,7 @@ Headers:
 - **IR** — Instruction stream with backend-owned types, module symbol table, and function/global metadata. No AST after lowering.
 - **Classical optimizer** — vectorization (AVX2), inlining, SROA, loop transforms, contracts (`@simd!`, `@inline!`, `@noalloc`), `--explain` decision reports.
 - **ML optimizer** (`--ml-opt`) — GNN proposes rewrites; interpreter-based translation validation accepts or rejects each one. The model is never trusted alone. See [ml-opt](docs/ml-opt.md).
-- **Codegen** — hand-encoded x86-64 (+ AVX2), ARM64, and NVIDIA PTX. No external assembler for the host path.
+- **Codegen** — hand-encoded x86-64 (+ AVX2), ARM64, NVIDIA PTX, and SPIR-V (OpenCL). No external assembler for the host path.
 - **Link** — built-in PE linker on Windows; ELF objects on Linux (system link).
 - **Debug / forensics** — source-level debug hooks, crash diagnosis, optional native-heap UAF traps.
 
@@ -109,7 +109,7 @@ Language highlights (full reference: [docs/LANGUAGE.md](docs/LANGUAGE.md)):
 - Static types, pointers, structs, enums, closures, `defer` / `errdefer`
 - C / OS interop; bundled stdlib
 - Compile-time memory diagnostics (UAF, double free, leaks) without ownership annotations — [borrow checker](docs/borrow-checker.md)
-- GPU kernels via native PTX — [GPU](docs/gpu.md)
+- GPU kernels via native PTX and SPIR-V — [GPU](docs/gpu.md)
 
 ```mettle
 import "std/io";
@@ -172,7 +172,7 @@ include/mtlc/     public C API (the stable surface of the backend)
 src/
   mtlc_api.c      API implementation
   ir/             IR core, classical optimizer, GNN ML-opt, type IR
-  codegen/        x86-64 · ARM64 · PTX  (backend-only; no frontend includes)
+  codegen/        x86-64 · ARM64 · PTX · SPIR-V  (backend-only; no frontend includes)
   linker/         COFF / PE
   frontend/       Mettle→libmtlc adapters (type map, symbol bake)
   lexer/ parser/ semantic/   reference frontend
@@ -207,7 +207,7 @@ Ground rules (hand-encoded ISA only, differential fuzzer for codegen/opt changes
 - [Language reference](docs/LANGUAGE.md) (Mettle)
 - [Compilation & flags](docs/compilation.md)
 - [ML optimizer](docs/ml-opt.md)
-- [GPU / PTX](docs/gpu.md)
+- [GPU / PTX / SPIR-V](docs/gpu.md)
 - [Borrow checker](docs/borrow-checker.md)
 - [C interop](docs/c-interop.md)
 - [Known limitations](docs/known-limitations.md)

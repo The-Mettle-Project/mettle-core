@@ -8,6 +8,7 @@
 #include "codegen/binary_emitter.h"
 #include "codegen/binary/arm64_ir.h"
 #include "codegen/ptx_emitter.h"
+#include "codegen/spirv_emitter.h"
 #include "linker/pe_emitter.h"
 #include "string_intern.h"
 #include "compiler/compiler_context.h"
@@ -2598,6 +2599,8 @@ int main(int argc, char *argv[]) {
       }
     } else if (strcmp(argv[i], "--emit-ptx") == 0) {
       options.emit_ptx = 1;
+    } else if (strcmp(argv[i], "--emit-spirv") == 0) {
+      options.emit_spirv = 1;
     } else if (strcmp(argv[i], "--emit-arm64") == 0) {
       options.emit_arm64 = 1;
     } else if (strcmp(argv[i], "-g") == 0 ||
@@ -3147,7 +3150,7 @@ int compile_file(const char *input_filename, const char *output_filename,
   parser = parser_create_with_error_reporter(lexer, error_reporter);
   if (parser) {
     /* Enable kernel index built-ins (thread.x etc.) for GPU compiles. */
-    parser->gpu_mode = options->emit_ptx;
+    parser->gpu_mode = options->emit_ptx || options->emit_spirv;
   }
   type_checker =
       type_checker_create_with_error_reporter(symbol_table, error_reporter);
@@ -3378,10 +3381,13 @@ int compile_file(const char *input_filename, const char *output_filename,
                     "reports optimization decisions)\n");
   }
   ir_lowering_set_explain(options->explain && options->optimize &&
-                          !options->emit_ptx);
+                          !options->emit_ptx && !options->emit_spirv);
 
   int emit_runtime_checks =
-      (options->release || options->emit_ptx || options->emit_arm64) ? 0 : 1;
+      (options->release || options->emit_ptx || options->emit_spirv ||
+       options->emit_arm64)
+          ? 0
+          : 1;
   compiler_set_phase(PROFILE_PHASE_IR_LOWERING);
   phase_start = compiler_profile_begin(&profile);
   int ir_ok = compile_lower_to_ir(program, type_checker, symbol_table,
@@ -3448,6 +3454,33 @@ int compile_file(const char *input_filename, const char *output_filename,
       goto cleanup;
     }
     printf("Generated PTX: %s\n", output_filename);
+    result = 0;
+    goto cleanup;
+  }
+
+  /* --emit-spirv: lower every function to a SPIR-V `Kernel` entry point and
+   * write the binary module. Like --emit-ptx, this is offload-only: no
+   * optimization (the emitter consumes the unoptimized IR shape), no object, no
+   * link. A driver's SPIR-V consumer (an OpenCL runtime) JITs it at load time. */
+  if (options->emit_spirv) {
+    FILE *spv_out = fopen(output_filename, "wb");
+    if (!spv_out) {
+      fprintf(stderr, "Error: could not open SPIR-V output '%s'\n",
+              output_filename);
+      result = 1;
+      goto cleanup;
+    }
+    char *spv_err = NULL;
+    int ok = spirv_emit_program(ir_program, code_generator, spv_out, &spv_err);
+    fclose(spv_out);
+    if (!ok) {
+      fprintf(stderr, "Error: SPIR-V emission failed: %s\n",
+              spv_err ? spv_err : "unknown");
+      free(spv_err);
+      result = 1;
+      goto cleanup;
+    }
+    printf("Generated SPIR-V: %s\n", output_filename);
     result = 0;
     goto cleanup;
   }

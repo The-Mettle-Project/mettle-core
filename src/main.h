@@ -30,6 +30,7 @@ typedef struct {
   int dump_ir;
   int ml_opt; /* --ml-opt: run the learned ML optimizer pass on the IR */
   int emit_ptx; /* --emit-ptx: lower every function to a PTX .entry, no object */
+  int emit_spirv; /* --emit-spirv: lower every function to a SPIR-V kernel, no object */
   int emit_arm64; /* --emit-arm64: lower scalar functions to an AArch64 ELF */
   int optimize;
   int release;

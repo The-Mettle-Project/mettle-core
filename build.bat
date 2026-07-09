@@ -161,7 +161,7 @@ echo Compiling code generator modules...
 for %%f in (code_generator_calls code_generator_flow code_generator_inline_debug code_generator_ir code_generator_ops code_generator_stack code_generator_variables) do (
     if exist obj\codegen\%%f.o del /Q obj\codegen\%%f.o
 )
-for %%f in (src\codegen\binary_emitter.c src\codegen\code_generator.c src\codegen\elf_emitter.c src\codegen\ptx_emitter.c) do (
+for %%f in (src\codegen\binary_emitter.c src\codegen\code_generator.c src\codegen\elf_emitter.c src\codegen\ptx_emitter.c src\codegen\spirv_emitter.c) do (
     echo   %%~nxf
     %CC% %CFLAGS% -c %%f -o obj\\codegen\\%%~nf.o
     if errorlevel 1 exit /b 1
@@ -258,7 +258,7 @@ if exist bin\mtlc.lib del /Q bin\mtlc.lib
 REM Backend IR core -- explicitly listed to EXCLUDE the lowering TUs below.
 for %%o in (ir ir_comptime ir_debug_hooks ir_interp ir_optimize ir_pgo ir_profile ir_verify ml_gnn ml_opt mtlc_type) do %AR% rcs bin\mtlc.lib obj\ir\%%o.o
 for %%o in (obj\ir\optimizer\*.o) do %AR% rcs bin\mtlc.lib %%o
-for %%o in (obj\codegen\binary_emitter.o obj\codegen\code_generator.o obj\codegen\elf_emitter.o obj\codegen\ptx_emitter.o) do %AR% rcs bin\mtlc.lib %%o
+for %%o in (obj\codegen\binary_emitter.o obj\codegen\code_generator.o obj\codegen\elf_emitter.o obj\codegen\ptx_emitter.o obj\codegen\spirv_emitter.o) do %AR% rcs bin\mtlc.lib %%o
 for %%o in (obj\codegen\binary\*.o) do %AR% rcs bin\mtlc.lib %%o
 for %%o in (obj\linker\*.o) do %AR% rcs bin\mtlc.lib %%o
 %AR% rcs bin\mtlc.lib obj\debug\debug_info.o

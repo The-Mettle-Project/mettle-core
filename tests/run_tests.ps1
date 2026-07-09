@@ -5684,6 +5684,63 @@ else {
   }
 }
 
+# SPIR-V backend validity gate. Emits the same GPU kernel corpus to SPIR-V
+# binary modules (--emit-spirv, the OpenCL 1.2 sibling of --emit-ptx) and
+# structurally validates each word stream: little-endian, correct magic, a
+# consistent word-count walk that lands exactly on EOF, an in-range id bound,
+# and every OpEntryPoint referencing a defined OpFunction. When the Vulkan SDK's
+# spirv-val is on PATH it is run too (the authoritative full validation, like
+# ptxas for PTX); otherwise the structural check stands alone (skip-augmented,
+# never skipped -- the emitter must always produce a well-formed module).
+$spirvVal = Get-Command spirv-val -ErrorAction SilentlyContinue
+function Test-SpirvModule([string]$path) {
+  $bytes = [System.IO.File]::ReadAllBytes($path)
+  if ($bytes.Length % 4 -ne 0) { throw "not word-aligned ($($bytes.Length) bytes)" }
+  $nwords = $bytes.Length / 4
+  if ($nwords -lt 5) { throw "shorter than a SPIR-V header" }
+  $w = [uint32[]]::new($nwords)
+  for ($k = 0; $k -lt $nwords; $k++) { $w[$k] = [BitConverter]::ToUInt32($bytes, $k * 4) }
+  if ($w[0] -ne 0x07230203) { throw ("bad magic 0x{0:x8}" -f $w[0]) }
+  $bound = $w[3]
+  $i = 5; $entries = @(); $funcs = @{}
+  while ($i -lt $nwords) {
+    $count = $w[$i] -shr 16; $op = $w[$i] -band 0xffff
+    if ($count -eq 0) { throw "zero word-count at word $i" }
+    if ($i + $count -gt $nwords) { throw "instruction overruns stream at word $i" }
+    if ($op -eq 15) { $entries += $w[$i + 2] }        # OpEntryPoint: funcid is operand 2
+    elseif ($op -eq 54) { $funcs[$w[$i + 2]] = $true } # OpFunction: result id is operand 2
+    $i += $count
+  }
+  if ($i -ne $nwords) { throw "trailing words after last instruction" }
+  foreach ($e in $entries) {
+    if (-not $funcs.ContainsKey($e)) { throw "entry point $e is not a defined function" }
+    if ($e -ge $bound) { throw "entry point id $e exceeds id bound $bound" }
+  }
+  return $entries.Count
+}
+foreach ($src in @("examples/llm/qwen3/gpu/kernels.mettle",
+                   "examples/llm/qwen3/gpu/ptx_stress.mettle",
+                   "examples/gpu_vadd/vadd_kernel.mettle")) {
+  $total++
+  $name = "spirv_emit_" + [System.IO.Path]::GetFileNameWithoutExtension($src)
+  try {
+    $spvPath = Join-Path $tmpDir ($name + ".spv")
+    $emitOut = & $CompilerPath --emit-spirv $src -o $spvPath 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "emit failed: $emitOut" }
+    if (-not (Test-Path $spvPath)) { throw "no SPIR-V produced" }
+    $null = Test-SpirvModule $spvPath
+    if ($spirvVal) {
+      $valOut = & $spirvVal.Source --target-env opencl1.2 $spvPath 2>&1 | Out-String
+      if ($LASTEXITCODE -ne 0) { throw "spirv-val rejected emitted module: $valOut" }
+    }
+    Write-CaseResult -Name $name -Passed $true
+  }
+  catch {
+    $failed++
+    Write-CaseResult -Name $name -Passed $false -Reason $_.Exception.Message
+  }
+}
+
 # Differential miscompile fuzzer gate. Generates UB-free programs, builds each
 # at debug and release, and fails on any exit-code divergence (a silent
 # miscompile). See tools/fuzz/README.md. Skipped if Python is unavailable or
