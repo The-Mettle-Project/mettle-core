@@ -77,6 +77,14 @@ typedef struct MtlcType {
   size_t tagged_data_size;                  /* size of the data union */
 } MtlcType;
 
+/* Canonical descriptor for a scalar/primitive kind: a shared, immortal singleton
+ * with the right size/alignment and canonical name. Intended for frontends that
+ * build IR through mtlc/build.h -- the returned pointer never needs freeing and
+ * outlives codegen. Returns NULL for kinds that need caller-supplied layout
+ * (STRUCT/ARRAY/POINTER/FUNCTION_POINTER/ENUM/TAGGED_ENUM); build those by
+ * filling an MtlcType you own, or with mtlc_type_pointer below. */
+const MtlcType *mtlc_type_scalar(MtlcTypeKind kind);
+
 /* Queries used across the backend. Implemented in src/ir/mtlc_type.c. */
 int mtlc_type_is_integer(const MtlcType *t);
 int mtlc_type_is_unsigned(const MtlcType *t);

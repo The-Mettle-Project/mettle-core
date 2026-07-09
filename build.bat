@@ -224,6 +224,10 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 echo Compiling libmtlc public API...
 %CC% %CFLAGS% -c src\mtlc_api.c -o obj\mtlc_api.o
 if %ERRORLEVEL% NEQ 0 exit /b 1
+%CC% %CFLAGS% -c src\mtlc_build.c -o obj\mtlc_build.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
+%CC% %CFLAGS% -c src\mtlc_lib_fallbacks.c -o obj\mtlc_lib_fallbacks.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Compiling frontend-to-backend type adapter...
 %CC% %CFLAGS% -c src\frontend\mtlc_type_from_frontend.c -o obj\frontend\mtlc_type_from_frontend.o
@@ -263,7 +267,7 @@ for %%o in (obj\codegen\binary\*.o) do %AR% rcs bin\mtlc.lib %%o
 for %%o in (obj\linker\*.o) do %AR% rcs bin\mtlc.lib %%o
 %AR% rcs bin\mtlc.lib obj\debug\debug_info.o
 for %%o in (obj\compiler\*.o) do %AR% rcs bin\mtlc.lib %%o
-%AR% rcs bin\mtlc.lib obj\common.o obj\mtlc_api.o
+%AR% rcs bin\mtlc.lib obj\common.o obj\mtlc_api.o obj\mtlc_build.o obj\mtlc_lib_fallbacks.o
 if not exist bin\mtlc.lib (
     echo Build failed: bin\mtlc.lib was not created.
     exit /b 1

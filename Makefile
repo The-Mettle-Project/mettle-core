@@ -36,7 +36,7 @@ LOWERING_SOURCES = \
 # Backend IR core (everything in src/ir except the lowering TUs) + optimizer.
 IR_CORE_SOURCES = $(filter-out $(LOWERING_SOURCES),$(wildcard $(SRCDIR)/ir/*.c)) $(wildcard $(SRCDIR)/ir/optimizer/*.c)
 # Public libmtlc API surface, and the frontend-side type-translation adapter.
-API_SOURCES = $(SRCDIR)/mtlc_api.c
+API_SOURCES = $(SRCDIR)/mtlc_api.c $(SRCDIR)/mtlc_build.c $(SRCDIR)/mtlc_lib_fallbacks.c
 FRONTEND_ADAPTER_SOURCES = $(SRCDIR)/frontend/mtlc_type_from_frontend.c $(SRCDIR)/frontend/mtlc_lower_module.c
 CODEGEN_SOURCES = \
 	$(SRCDIR)/codegen/binary_emitter.c \

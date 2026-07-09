@@ -1,9 +1,11 @@
 /* mtlc/module.h - a unit of IR the backend optimizes and lowers to code.
  *
  * MtlcModule is an opaque handle wrapping the backend's IR program. A frontend
- * produces IR (today, via the reference Mettle lowering pass) and adopts it into
- * a module; the backend pipeline (optimize -> codegen -> link) then operates on
- * the module without any knowledge of the frontend that built it.
+ * produces IR -- either through the public IR builder (mtlc/build.h) or, like
+ * the reference Mettle frontend, via its own lowering pass -- and hands it to a
+ * module; the backend pipeline (optimize -> codegen -> link, in mtlc/pipeline.h)
+ * then operates on the module without any knowledge of the frontend that built
+ * it.
  *
  * The IR program is referenced through an opaque `void *` here so this public
  * header stays independent of the backend's internal IR layout (src/ir/ir.h).

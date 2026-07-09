@@ -5720,6 +5720,50 @@ foreach ($src in @("examples/llm/qwen3/gpu/kernels.mettle",
   }
 }
 
+# libmtlc frontend-agnostic gate. Builds the calc example -- a non-Mettle
+# frontend that includes ONLY include/mtlc and links ONLY bin/mtlc.lib -- then
+# compiles two .calc programs to native executables and asserts their computed
+# exit codes. This exercises the whole public API path end to end (IR builder ->
+# optimizer -> native x86-64 codegen -> internal PE link) with no Mettle
+# frontend in the loop, proving libmtlc is frontend-agnostic. Skipped if gcc is
+# unavailable (it links the example against the static library).
+$calcGcc = Get-Command gcc -ErrorAction SilentlyContinue
+if (-not $calcGcc) {
+  Write-Host "[SKIP] calc_frontend (gcc not found)"
+}
+elseif (-not (Test-Path "bin\mtlc.lib")) {
+  Write-Host "[SKIP] calc_frontend (bin\mtlc.lib not present)"
+}
+else {
+  $total++
+  try {
+    $calcExe = Join-Path $tmpDir "calc.exe"
+    $buildOut = & $calcGcc.Source -Wall -Wextra -std=c99 -Iinclude `
+      examples/calc/calc.c bin/mtlc.lib -o $calcExe -ldbghelp 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "building the calc frontend failed: $buildOut" }
+    $cases = @(
+      @{ src = "examples/calc/programs/factorial.calc"; expect = 120 },
+      @{ src = "examples/calc/programs/loops.calc"; expect = 55 }
+    )
+    foreach ($c in $cases) {
+      $name = [System.IO.Path]::GetFileNameWithoutExtension($c.src)
+      $exe = Join-Path $tmpDir ("calc_" + $name + ".exe")
+      $emit = & $calcExe $c.src $exe 2>&1 | Out-String
+      if ($LASTEXITCODE -ne 0) { throw "calc failed on $($c.src): $emit" }
+      if (-not (Test-Path $exe)) { throw "no executable produced for $($c.src)" }
+      & $exe | Out-Null
+      if ($LASTEXITCODE -ne $c.expect) {
+        throw "$($c.src): exit code $LASTEXITCODE, expected $($c.expect)"
+      }
+    }
+    Write-CaseResult -Name "calc_frontend" -Passed $true
+  }
+  catch {
+    $failed++
+    Write-CaseResult -Name "calc_frontend" -Passed $false -Reason $_.Exception.Message
+  }
+}
+
 # Differential miscompile fuzzer gate. Generates UB-free programs, builds each
 # at debug and release, and fails on any exit-code divergence (a silent
 # miscompile). See tools/fuzz/README.md. Skipped if Python is unavailable or

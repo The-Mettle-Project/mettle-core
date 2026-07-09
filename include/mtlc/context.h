@@ -3,11 +3,11 @@
  * MtlcContext replaces the process-global compiler state the backend historically
  * relied on (explain sinks, ML-opt model paths, optimization knobs). Holding this
  * state on an explicit handle is what lets any frontend drive libmtlc, and is a
- * prerequisite for reentrancy.
+ * prerequisite for reentrancy: the backend keeps its remaining mutable
+ * per-compile state thread-local, so separate threads can each drive a context.
  *
- * Phase 1 status: the handle owns the high-level knobs below and is threaded
- * through the mtlc_* pipeline entry points. Some legacy passes still read a few
- * process globals directly; migrating those fully onto the context is Phase 2.
+ * The handle owns the high-level knobs below and is threaded through the mtlc_*
+ * pipeline entry points (optimize, ML-opt, codegen, link) in mtlc/pipeline.h.
  */
 #ifndef MTLC_CONTEXT_H
 #define MTLC_CONTEXT_H

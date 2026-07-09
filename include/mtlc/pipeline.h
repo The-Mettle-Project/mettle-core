@@ -1,10 +1,9 @@
 /* mtlc/pipeline.h - the backend pipeline: optimize -> codegen -> link.
  *
- * These are the frontend-agnostic entry points into libmtlc. Phase 1 exposes the
- * fully decoupled optimization stages (the classical optimizer and the GNN-driven
- * ML optimizer). The codegen and link stages are still orchestrated by the
- * reference driver (src/main.c) while codegen is decoupled from the frontend
- * type system; they become first-class mtlc_* entry points in Phase 2.
+ * These are the frontend-agnostic entry points into libmtlc: the classical
+ * optimizer, the GNN-driven ML optimizer, native object emission, and linking a
+ * native executable. A frontend builds a module (mtlc/build.h), then drives it
+ * through these stages -- see examples/calc for a complete non-Mettle frontend.
  */
 #ifndef MTLC_PIPELINE_H
 #define MTLC_PIPELINE_H
@@ -37,6 +36,21 @@ typedef struct {
  * Returns 1 on success, 0 on error. */
 int mtlc_apply_ml_opt(MtlcContext *ctx, MtlcModule *module,
                       MtlcMlOptStats *stats);
+
+/* Generate native code for the module and write a relocatable object file (the
+ * host object format: COFF on Windows, ELF elsewhere) to `path`. Run
+ * mtlc_optimize first for optimized code. Returns 1 on success, 0 on error
+ * (message printed to stderr). */
+int mtlc_emit_object(MtlcContext *ctx, MtlcModule *module, const char *path);
+
+/* Compile the module all the way to a native executable at `output_path`: emit
+ * a temporary object, synthesize the C-runtime startup that calls the program's
+ * `main`, and link. On Windows this uses libmtlc's own internal PE linker
+ * (imports resolved by DLL name -- no external toolchain); on ELF hosts it
+ * invokes the system C compiler to link the object. Returns 1 on success, 0 on
+ * error. */
+int mtlc_build_executable(MtlcContext *ctx, MtlcModule *module,
+                          const char *output_path);
 
 #ifdef __cplusplus
 }
