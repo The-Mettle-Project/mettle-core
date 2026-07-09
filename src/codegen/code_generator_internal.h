@@ -3,21 +3,37 @@
 
 #include "code_generator.h"
 
+/* Symbol kinds a code-generator symbol view can take (backend-owned; the
+ * frontend's SymbolKind is no longer visible to codegen). */
+enum {
+  CG_SYM_FUNCTION,
+  CG_SYM_VARIABLE,
+  CG_SYM_CONSTANT,
+  CG_SYM_PARAMETER /* never produced by a module lookup; kept for dead paths */
+};
+/* Scope kinds. Module symbols are always at global scope. */
+enum { CG_SCOPE_GLOBAL };
+
+/* Minimal scope view: codegen only ever checks `scope->type == CG_SCOPE_GLOBAL`. */
+typedef struct {
+  int type;
+} CgScope;
+
 /* A frontend-shaped VIEW of an IR module symbol (IRModuleSymbol), built on
  * demand by code_generator_lookup_symbol. Its field layout deliberately mirrors
- * the frontend Symbol members codegen reads, so the call sites that used to hold
- * a `Symbol *` keep their field accesses (s->kind, s->type,
+ * the Symbol members codegen reads, so the call sites that used to hold a
+ * `Symbol *` keep their field accesses (s->kind, s->type,
  * s->data.function.return_type, ...) unchanged after switching the lookup. This
- * is the seam that lets codegen stop calling the frontend symbol table. */
+ * is the seam that let codegen stop calling the frontend symbol table. */
 typedef struct {
-  int kind;               /* SYMBOL_FUNCTION / SYMBOL_VARIABLE / SYMBOL_CONSTANT */
+  int kind;               /* CG_SYM_FUNCTION / CG_SYM_VARIABLE / CG_SYM_CONSTANT */
   const MtlcType *type;   /* the symbol's type */
   int is_extern;
   const char *link_name;  /* object-file linkage name, or NULL */
   /* Module symbols all live at global scope; this points at a shared sentinel
-   * whose ->type is SCOPE_GLOBAL so the `scope->type == SCOPE_GLOBAL` guards in
-   * codegen keep working unchanged. NULL only for an absent symbol. */
-  const Scope *scope;
+   * whose ->type is CG_SCOPE_GLOBAL so the `scope->type == CG_SCOPE_GLOBAL`
+   * guards in codegen keep working unchanged. NULL only for an absent symbol. */
+  const CgScope *scope;
   union {
     struct {
       const MtlcType *return_type;
@@ -53,8 +69,7 @@ const MtlcType *code_generator_named_type(CodeGenerator *generator,
 void code_generator_set_error(CodeGenerator *generator, const char *format, ...);
 const char *code_generator_get_link_symbol_name(CodeGenerator *generator,
                                                 const char *symbol_name);
-int code_generator_generate_program_binary_object(CodeGenerator *generator,
-                                                  ASTNode *program);
+int code_generator_generate_program_binary_object(CodeGenerator *generator);
 
 /* Microsoft x64 ABI classification.
  *

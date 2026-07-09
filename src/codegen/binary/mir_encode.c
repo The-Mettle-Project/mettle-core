@@ -1,7 +1,6 @@
 #include "codegen/binary/mir.h"
 #include "codegen/binary/mir_annotate.h"
 #include "codegen/code_generator_internal.h"
-#include "semantic/symbol_table.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1493,7 +1492,7 @@ static int encode_load_global(MirFunction *fn, const MirInst *in) {
     int width = fn->vregs[in->dst.vreg].width;
     const char *link = code_generator_get_link_symbol_name(g, name);
     const CgSym *s =
-        (g && g->symbol_table) ? code_generator_lookup_symbol(g, name)
+        (g && g->ir_program) ? code_generator_lookup_symbol(g, name)
                                : NULL;
     if (!link || !link[0] || !s) {
       return enc_err(fn, "unresolved global in MIR_LOAD_GLOBAL");
@@ -1523,7 +1522,7 @@ static int encode_load_global(MirFunction *fn, const MirInst *in) {
   } else {
     const char *link = code_generator_get_link_symbol_name(g, name);
     const CgSym *s =
-        (g && g->symbol_table) ? code_generator_lookup_symbol(g, name)
+        (g && g->ir_program) ? code_generator_lookup_symbol(g, name)
                                : NULL;
     if (!link || !link[0] || !s) {
       return enc_err(fn, "unresolved global in MIR_LOAD_GLOBAL");
@@ -1576,7 +1575,7 @@ static int encode_store_global(MirFunction *fn, const MirInst *in) {
     }
   }
   const char *link = code_generator_get_link_symbol_name(g, name);
-  const CgSym *s = (g && g->symbol_table) ? code_generator_lookup_symbol(g, name)
+  const CgSym *s = (g && g->ir_program) ? code_generator_lookup_symbol(g, name)
                                      : NULL;
   if (!link || !link[0] || !s) {
     return enc_err(fn, "unresolved global in MIR_STORE_GLOBAL");

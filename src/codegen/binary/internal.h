@@ -687,12 +687,11 @@ int code_generator_binary_type_is_string(MtlcType *type);
 int code_generator_binary_validate_call(CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_validate_indirect_call( CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_validate_signature(CodeGenerator *generator, IRFunction *ir_function);
-int code_generator_binary_x86_to_gp_register(x86Register source, BinaryGpRegister *out);
 int code_generator_declare_binary_externs(CodeGenerator *generator);
 int code_generator_emit_binary_function(CodeGenerator *generator,
                                         IRFunction *ir_function);
 int code_generator_emit_binary_global_variable(CodeGenerator *generator, const IRModuleSymbol *sym);
-int code_generator_generate_program_binary_object(CodeGenerator *generator, ASTNode *program);
+int code_generator_generate_program_binary_object(CodeGenerator *generator);
 int simd_emit_xmm_mem_disp(BinaryCodeBuffer *b, unsigned char opcode, int xmm, int gpr, int displacement);
 int simd_emit_prefixed_xmm_mem_disp(BinaryCodeBuffer *b, unsigned char prefix, unsigned char opcode, int xmm, int gpr, int displacement);
 int simd_movdqu_mem_xmm_disp(BinaryCodeBuffer *b, int gpr, int displacement, int xmm);

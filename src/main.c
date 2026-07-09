@@ -3049,9 +3049,8 @@ static int compile_optimize_ir(IRProgram *ir_program, ASTNode *ast_program,
   return 1;
 }
 
-static int compile_generate_code(CodeGenerator *code_generator,
-                                 ASTNode *program) {
-  if (!code_generator_generate_program(code_generator, program)) {
+static int compile_generate_code(CodeGenerator *code_generator) {
+  if (!code_generator_generate_program(code_generator)) {
     fprintf(stderr, "Code generation error: %s\n",
             (code_generator && code_generator->error_message)
                 ? code_generator->error_message
@@ -3190,11 +3189,9 @@ int compile_file(const char *input_filename, const char *output_filename,
       compiler_profile_print_compile(&profile, input_filename, 1);
       return 1;
     }
-    code_generator = code_generator_create_with_debug(
-        symbol_table, type_checker, register_allocator, debug_info);
+    code_generator = code_generator_create_with_debug(debug_info);
   } else {
-    code_generator =
-        code_generator_create(symbol_table, type_checker, register_allocator);
+    code_generator = code_generator_create();
   }
 
   if (!code_generator) {
@@ -3608,7 +3605,7 @@ int compile_file(const char *input_filename, const char *output_filename,
 
   compiler_set_phase(PROFILE_PHASE_CODEGEN);
   phase_start = compiler_profile_begin(&profile);
-  int codegen_ok = compile_generate_code(code_generator, program);
+  int codegen_ok = compile_generate_code(code_generator);
   compiler_profile_add(&profile, PROFILE_PHASE_CODEGEN, phase_start);
   if (!codegen_ok) {
     result = 1;

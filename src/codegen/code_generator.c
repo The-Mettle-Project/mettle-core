@@ -1,17 +1,7 @@
-/* MTLC-PHASE2: residual frontend coupling in codegen.
- *
- * The IR core (ir.h) is now frontend-free, but the code generators still reach
- * back into the reference frontend's type system at codegen time instead of
- * reading type facts baked onto the IR. These are the bridge points to retire in
- * Phase 2 (grep "MTLC-PHASE2" to find them all):
- *   - code_generator_infer_expression_type(gen, ir->ast_ref): re-derives an
- *     expression's Type from the origin AST node (abi.c, emit.c, peephole.c).
- *   - type_checker_get_type_by_name(gen->type_checker, name): named-type lookup
- *     (abi.c, emit.c, mir_lower.c, peephole.c).
- *   - symbol_table_lookup(gen->symbol_table, name): symbol/type classification.
- * Phase 2 bakes an MtlcType onto the relevant IR instructions/operands (via the
- * frontend adapter, mtlc_type_from_frontend) so codegen consumes only IR and this
- * file no longer includes the frontend AST/type-checker/symbol-table headers. */
+/* The code generators are frontend-free: they consume only the backend IR
+ * (ir.h) and its module type registry + symbol table. Type facts are read from
+ * IRInstruction.value_type and the module tables, never re-derived from a
+ * frontend AST/TypeChecker/SymbolTable. */
 #include "code_generator_internal.h"
 #include "compiler/compiler_context.h"
 
@@ -20,17 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-CodeGenerator *code_generator_create(SymbolTable *symbol_table,
-                                     TypeChecker *type_checker,
-                                     RegisterAllocator *allocator) {
+CodeGenerator *code_generator_create(void) {
   CodeGenerator *generator = malloc(sizeof(CodeGenerator));
   if (!generator) {
     return NULL;
   }
 
-  generator->symbol_table = symbol_table;
-  generator->type_checker = type_checker;
-  generator->register_allocator = allocator;
   generator->debug_info = NULL;
   generator->current_label_id = 0;
   generator->current_function_name = NULL;
@@ -57,12 +42,8 @@ CodeGenerator *code_generator_create(SymbolTable *symbol_table,
   return generator;
 }
 
-CodeGenerator *code_generator_create_with_debug(SymbolTable *symbol_table,
-                                                TypeChecker *type_checker,
-                                                RegisterAllocator *allocator,
-                                                DebugInfo *debug_info) {
-  CodeGenerator *generator =
-      code_generator_create(symbol_table, type_checker, allocator);
+CodeGenerator *code_generator_create_with_debug(DebugInfo *debug_info) {
+  CodeGenerator *generator = code_generator_create();
   if (!generator) {
     return NULL;
   }
@@ -119,15 +100,15 @@ const CgSym *code_generator_lookup_symbol(CodeGenerator *generator,
     if (!v) {
       return NULL;
     }
-    v->kind = (m->kind == IR_MODSYM_FUNCTION)   ? SYMBOL_FUNCTION
-              : (m->kind == IR_MODSYM_CONSTANT) ? SYMBOL_CONSTANT
-                                                : SYMBOL_VARIABLE;
+    v->kind = (m->kind == IR_MODSYM_FUNCTION)   ? CG_SYM_FUNCTION
+              : (m->kind == IR_MODSYM_CONSTANT) ? CG_SYM_CONSTANT
+                                                : CG_SYM_VARIABLE;
     v->type = m->type;
     v->is_extern = m->is_extern;
     v->link_name = m->link_name;
-    /* Module symbols are global-scope; point at a shared SCOPE_GLOBAL sentinel
-     * so codegen's `scope->type == SCOPE_GLOBAL` guards read true. */
-    static const Scope module_scope = {.type = SCOPE_GLOBAL};
+    /* Module symbols are global-scope; point at a shared CG_SCOPE_GLOBAL
+     * sentinel so codegen's `scope->type == CG_SCOPE_GLOBAL` guards read true. */
+    static const CgScope module_scope = {CG_SCOPE_GLOBAL};
     v->scope = &module_scope;
     if (m->kind == IR_MODSYM_FUNCTION) {
       v->data.function.return_type = m->return_type;
@@ -142,8 +123,8 @@ const CgSym *code_generator_lookup_symbol(CodeGenerator *generator,
   return (const CgSym *)m->codegen_view;
 }
 
-int code_generator_generate_program(CodeGenerator *generator, ASTNode *program) {
-  return code_generator_generate_program_binary_object(generator, program);
+int code_generator_generate_program(CodeGenerator *generator) {
+  return code_generator_generate_program_binary_object(generator);
 }
 
 void code_generator_set_error(CodeGenerator *generator, const char *format,
@@ -303,11 +284,7 @@ const char *code_generator_get_link_symbol_name(CodeGenerator *generator,
   if (!symbol_name || symbol_name[0] == '\0') {
     return NULL;
   }
-  if (!generator || !generator->symbol_table) {
-    return symbol_name;
-  }
-
-  Symbol *symbol = symbol_table_lookup(generator->symbol_table, symbol_name);
+  const CgSym *symbol = code_generator_lookup_symbol(generator, symbol_name);
   if (symbol && symbol->is_extern && symbol->link_name &&
       symbol->link_name[0] != '\0') {
     return symbol->link_name;

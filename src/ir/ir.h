@@ -326,13 +326,12 @@ typedef struct {
    * contract checker. IR_OP_NEW and allocator calls are recognized by opcode/
    * name and don't need it. */
   int allocates;
-  /* Opaque frontend origin pointer (the AST node this instruction was lowered
-   * from), or NULL for instructions the optimizer synthesized. The IR core and
-   * optimizer treat this as an opaque token (set/copy/NULL-test only); only the
-   * frontend that produced it, and the codegen bridge that still re-derives a
-   * type from it, ever cast it back to a concrete node type. Kept as void* so
-   * the backend IR carries no frontend AST dependency.
-   * MTLC-PHASE2: retire this once codegen reads a baked-in MtlcType instead. */
+  /* Opaque origin token: NULL for instructions the optimizer synthesized,
+   * non-NULL for instructions lowered from source. The IR core and optimizer use
+   * it only as a "was this synthesized?" flag (set/copy/NULL-test); the frontend
+   * that produced it may cast it back to its own node type. Codegen no longer
+   * reads it (types are baked into value_type). Kept as void* so the backend IR
+   * carries no frontend AST dependency. */
   void *ast_ref;
   /* Backend-owned result/subject type of this instruction, baked at lowering so
    * the code generators never re-derive it from the frontend AST/TypeChecker.

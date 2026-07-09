@@ -365,15 +365,8 @@ mir_shared_append:
   binary_function_context_destroy(&context);
   return 1;
 }
-int code_generator_generate_program_binary_object(CodeGenerator *generator,
-                                                  ASTNode *program) {
-  Program *program_data = NULL;
-
-  if (!generator || !program) {
-    return 0;
-  }
-  if (program->type != AST_PROGRAM) {
-    code_generator_set_error(generator, "Expected AST_PROGRAM root node");
+int code_generator_generate_program_binary_object(CodeGenerator *generator) {
+  if (!generator) {
     return 0;
   }
   if (!generator->ir_program) {
@@ -386,11 +379,6 @@ int code_generator_generate_program_binary_object(CodeGenerator *generator,
   code_generator_binary_select_abi(generator->binary_emitter->target_format);
 
   binary_emitter_reset(generator->binary_emitter);
-  program_data = (Program *)program->data;
-  if (!program_data) {
-    code_generator_set_error(generator, "Program node is missing data");
-    return 0;
-  }
 
   binary_global_const_table_reset();
   binary_ir_function_index_reset();
@@ -453,7 +441,7 @@ int code_generator_generate_program_binary_object(CodeGenerator *generator,
   }
   free(emit_order);
 
-  /* Global variables: an integer `const` folds to a SYMBOL_CONSTANT at every
+  /* Global variables: an integer `const` folds to a CG_SYM_CONSTANT at every
    * use site and carries no storage (IR_MODSYM_CONSTANT, not represented
    * here); a non-integer `const` (float/string/aggregate) is registered as an
    * immutable variable instead and DOES need storage, since the IR references

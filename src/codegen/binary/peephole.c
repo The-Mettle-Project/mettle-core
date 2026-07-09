@@ -2357,7 +2357,7 @@ int code_generator_binary_try_emit_binary_cast_chain(
     return 0;
   }
 
-  target_type = generator->type_checker
+  target_type = generator->ir_program
                     ? code_generator_named_type(generator,
                                                     cast->text)
                     : NULL;

@@ -3,7 +3,6 @@
 #include "codegen/binary/mir_annotate.h"
 #include "common.h"
 #include "ir/ir_optimize.h"
-#include "semantic/symbol_table.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,12 +69,12 @@ static int mir_trace_bail(const IRFunction *fn, const char *reason) {
  * cache in a register at function entry (used by both the eligibility gate and
  * the entry-load emitter, so they agree exactly on what counts as cacheable). */
 static int mir_name_is_global_scalar(CodeGenerator *g, const char *name) {
-  if (!g || !g->symbol_table || !name) {
+  if (!g || !g->ir_program || !name) {
     return 0;
   }
   const CgSym *s = code_generator_lookup_symbol(g, name);
-  if (!s || s->kind != SYMBOL_VARIABLE || !s->scope ||
-      s->scope->type != SCOPE_GLOBAL) {
+  if (!s || s->kind != CG_SYM_VARIABLE || !s->scope ||
+      s->scope->type != CG_SCOPE_GLOBAL) {
     return 0;
   }
   return code_generator_binary_symbol_is_scalar_accessible(g, name);
@@ -554,7 +553,7 @@ static int mir_dest_integer_narrow_width(CodeGenerator *g,
     return 0;
   }
   MtlcType *t = mir_local_or_param_type(g, irf, dest->name, NULL);
-  if (!t && g->symbol_table) {
+  if (!t && g->ir_program) {
     /* Not a local/param: a global scalar (its symbol never goes out of
      * scope). The cached-global vreg carries the value across the function
      * body, so it needs the same canonicalization as a local's vreg. */
@@ -617,14 +616,14 @@ static int mir_indirect_type_home_bytes(CodeGenerator *g, MtlcType *t) {
  * through another temp — so it cannot recurse.) */
 static int mir_struct_temp_size(CodeGenerator *g, const IRFunction *irf,
                                 const char *name) {
-  if (!g || !irf || !name || !g->symbol_table) {
+  if (!g || !irf || !name || !g->ir_program) {
     return 0;
   }
   for (size_t i = 0; i < irf->instruction_count; i++) {
     const IRInstruction *in = &irf->instructions[i];
     if (in->op == IR_OP_CALL && in->text) {
       const CgSym *cal = code_generator_lookup_symbol(g, in->text);
-      if (cal && cal->kind == SYMBOL_FUNCTION) {
+      if (cal && cal->kind == CG_SYM_FUNCTION) {
         /* defined by a struct-returning call */
         if (in->dest.kind == IR_OPERAND_TEMP && in->dest.name &&
             strcmp(in->dest.name, name) == 0) {
@@ -720,14 +719,14 @@ static int mir_temp_is_float(CodeGenerator *g, IRFunction *function,
     if (in->op == IR_OP_ASSIGN && in->lhs.kind == IR_OPERAND_TEMP) {
       return mir_temp_is_float(g, function, in->lhs.name, depth + 1);
     }
-    if (in->op == IR_OP_CALL && in->text && g->symbol_table) {
+    if (in->op == IR_OP_CALL && in->text && g->ir_program) {
       const CgSym *callee = code_generator_lookup_symbol(g, in->text);
-      if (callee && callee->kind == SYMBOL_FUNCTION) {
+      if (callee && callee->kind == CG_SYM_FUNCTION) {
         return code_generator_binary_resolved_type_float_bits(
                    callee->data.function.return_type) != 0;
       }
     }
-    if (in->op == IR_OP_CALL_INDIRECT && g->symbol_table &&
+    if (in->op == IR_OP_CALL_INDIRECT && g->ir_program &&
         in->lhs.kind == IR_OPERAND_SYMBOL && in->lhs.name) {
       MtlcType *ft = mir_local_or_param_type(g, function, in->lhs.name, NULL);
       const CgSym *callee = ft ? NULL : code_generator_lookup_symbol(g,
@@ -779,7 +778,7 @@ static MtlcType *mir_indirect_call_type(CodeGenerator *g,
   if (local && local->kind == MTLC_TYPE_FUNCTION_POINTER) {
     return local;
   }
-  const CgSym *sym = g->symbol_table ? code_generator_lookup_symbol(g,
+  const CgSym *sym = g->ir_program ? code_generator_lookup_symbol(g,
                                                       in->lhs.name)
                                 : NULL;
   return (sym && sym->type && sym->type->kind == MTLC_TYPE_FUNCTION_POINTER)
@@ -906,10 +905,10 @@ static MirAddrofKind mir_addressof_kind(CodeGenerator *g,
   if (in->lhs.kind != IR_OPERAND_SYMBOL || !in->lhs.name) {
     return MIR_ADDROF_UNSUPPORTED;
   }
-  const CgSym *sym = g && g->symbol_table
+  const CgSym *sym = g && g->ir_program
                     ? code_generator_lookup_symbol(g, in->lhs.name)
                     : NULL;
-  if ((sym && sym->kind == SYMBOL_FUNCTION) ||
+  if ((sym && sym->kind == CG_SYM_FUNCTION) ||
       mir_find_ir_function_named(g, in->lhs.name)) {
     return MIR_ADDROF_FUNCTION;
   }
@@ -963,7 +962,7 @@ static int mir_arg_float_bits(CodeGenerator *g, const IRFunction *ir_function,
       if (lt) {
         return code_generator_binary_resolved_type_float_bits(lt);
       }
-      if (g && g->symbol_table) {
+      if (g && g->ir_program) {
         const CgSym *s = code_generator_lookup_symbol(g, op->name);
         if (s) {
           return code_generator_binary_resolved_type_float_bits(s->type);
@@ -991,8 +990,8 @@ static int mir_call_is_supported(CodeGenerator *g,
     return 0;
   }
   const CgSym *callee =
-      g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
-  if (!callee || callee->kind != SYMBOL_FUNCTION) {
+      g->ir_program ? code_generator_lookup_symbol(g, in->text) : NULL;
+  if (!callee || callee->kind != CG_SYM_FUNCTION) {
     mir_call_trace("not_known_function");
     return 0;
   }
@@ -2190,9 +2189,9 @@ static int mir_address_of_function_target(CodeGenerator *g,
   if (!g || !op || op->kind != IR_OPERAND_SYMBOL || !op->name) {
     return 0;
   }
-  const CgSym *s = g->symbol_table ? code_generator_lookup_symbol(g, op->name)
+  const CgSym *s = g->ir_program ? code_generator_lookup_symbol(g, op->name)
                               : NULL;
-  return (s && s->kind == SYMBOL_FUNCTION) ||
+  return (s && s->kind == CG_SYM_FUNCTION) ||
          mir_find_ir_function_named(g, op->name) != NULL;
 }
 
@@ -2948,7 +2947,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * always resolvable; the dest operand's type is not (a temp has no
      * resolved type at -O0, which would silently drop a narrowing cast). Prefer
      * in->text, matching the fallback emitter, and fall back to the operand. */
-    MtlcType *dt = (in->text && g->type_checker)
+    MtlcType *dt = (in->text && g->ir_program)
                    ? code_generator_named_type(g, in->text)
                    : NULL;
     if (!dt) {
@@ -3214,8 +3213,8 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
     int ret_indirect = 0;
     {
       const CgSym *rc =
-          g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
-      MtlcType *rret = (rc && rc->kind == SYMBOL_FUNCTION)
+          g->ir_program ? code_generator_lookup_symbol(g, in->text) : NULL;
+      MtlcType *rret = (rc && rc->kind == CG_SYM_FUNCTION)
                        ? (rc->data.function.return_type ? rc->data.function.return_type
                                                         : rc->type)
                        : NULL;
@@ -3232,10 +3231,10 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * defaults to integer and a float arg is homed into a GP register (and a
      * float immediate then reaches the GP value path — an encoder error). */
     {
-      const CgSym *fc = g->symbol_table
+      const CgSym *fc = g->ir_program
                        ? code_generator_lookup_symbol(g, in->text)
                        : NULL;
-      if (fc && fc->kind == SYMBOL_FUNCTION &&
+      if (fc && fc->kind == CG_SYM_FUNCTION &&
           fc->data.function.parameter_types) {
         for (size_t a = 0; a < in->argument_count &&
                            a < fc->data.function.parameter_count;
@@ -3270,11 +3269,11 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
      * INDIRECT arg is a struct LOCAL, so its source is its stack home. */
     int indirect_off[MIR_MAX_PARAMS] = {0}; /* slot offset, or -1 if not indirect */
     const CgSym *call_callee =
-        g->symbol_table ? code_generator_lookup_symbol(g, in->text) : NULL;
+        g->ir_program ? code_generator_lookup_symbol(g, in->text) : NULL;
     int indirect_region = 0;
     for (size_t a = 0; a < in->argument_count; a++) {
       indirect_off[a] = -1;
-      MtlcType *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
+      MtlcType *pt = (call_callee && call_callee->kind == CG_SYM_FUNCTION &&
                   call_callee->data.function.parameter_types)
                      ? call_callee->data.function.parameter_types[a]
                      : NULL;
@@ -3392,7 +3391,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
       }
       fn->has_xmm_arg_call = 1;
       BinaryXmmRegister xreg = locs[a + hidden].xmm_register;
-      MtlcType *pt = (call_callee && call_callee->kind == SYMBOL_FUNCTION &&
+      MtlcType *pt = (call_callee && call_callee->kind == CG_SYM_FUNCTION &&
                   call_callee->data.function.parameter_types)
                      ? call_callee->data.function.parameter_types[a]
                      : NULL;
@@ -3947,7 +3946,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
        * declare-external flag for the encoder). The global stays cached; the
        * main loop flushes/reloads address-taken globals around pointer memory
        * ops so the alias and the cache vreg stay coherent. */
-      const CgSym *s = g->symbol_table
+      const CgSym *s = g->ir_program
                       ? code_generator_lookup_symbol(g, in->lhs.name)
                       : NULL;
       int is_extern = (s && s->is_extern) ? 1 : 0;
@@ -3955,7 +3954,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
                        mir_op_none(), 8, is_extern, 0);
     }
     if (ak == MIR_ADDROF_FUNCTION) {
-      const CgSym *s = g->symbol_table
+      const CgSym *s = g->ir_program
                       ? code_generator_lookup_symbol(g, in->lhs.name)
                       : NULL;
       int is_extern = (s && s->is_extern) ? 1 : 0;

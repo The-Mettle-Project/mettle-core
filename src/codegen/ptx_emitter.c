@@ -23,7 +23,7 @@ typedef struct {
   int idx;         /* register index within its class */
   int is_unsigned; /* integer signedness hint */
   int is_ptr;      /* pointer value (still PC_B64) */
-  TypeKind elem;   /* pointed-to scalar kind, when is_ptr */
+  MtlcTypeKind elem;   /* pointed-to scalar kind, when is_ptr */
 } PtxVal;
 
 typedef struct {
@@ -159,7 +159,7 @@ static PtxVal *bind_value(PtxFn *fn, const char *name, PtxVal v) {
 }
 
 /* ---- type-name parsing (no symbol table) ---- */
-static TypeKind base_kind_from_name(const char *s, int *is_unsigned) {
+static MtlcTypeKind base_kind_from_name(const char *s, int *is_unsigned) {
   *is_unsigned = (strstr(s, "uint") != NULL || strstr(s, "bool") != NULL);
   if (strstr(s, "float32") || strstr(s, "f32")) {
     return MTLC_TYPE_FLOAT32;
@@ -184,7 +184,7 @@ static TypeKind base_kind_from_name(const char *s, int *is_unsigned) {
   }
   return MTLC_TYPE_INT32;
 }
-static PtxClass class_of_kind(TypeKind k, int *is_unsigned) {
+static PtxClass class_of_kind(MtlcTypeKind k, int *is_unsigned) {
   switch (k) {
   case MTLC_TYPE_INT8:
   case MTLC_TYPE_INT16:
@@ -230,7 +230,7 @@ static PtxVal descriptor_from_typename(const char *name) {
   int ptr = (strchr(name, '*') != NULL) || strstr(name, "cstring") ||
             strstr(name, "string");
   int isu = 0;
-  TypeKind base = base_kind_from_name(name, &isu);
+  MtlcTypeKind base = base_kind_from_name(name, &isu);
   if (strstr(name, "cstring")) {
     base = MTLC_TYPE_UINT8;
   }
@@ -251,12 +251,12 @@ static PtxVal descriptor_from_typename(const char *name) {
 }
 
 /* element class from a pointer value's elem kind */
-static PtxClass elem_class(TypeKind elem, int *is_unsigned) {
+static PtxClass elem_class(MtlcTypeKind elem, int *is_unsigned) {
   return class_of_kind(elem, is_unsigned);
 }
 
 /* PTX ld/st type suffix for a load/store of element kind */
-static const char *mem_type_suffix(TypeKind elem) {
+static const char *mem_type_suffix(MtlcTypeKind elem) {
   switch (elem) {
   case MTLC_TYPE_INT8:
     return "s8";
@@ -709,7 +709,7 @@ static void emit_function(IRProgram *program, size_t fi, CodeGenerator *gen,
     case IR_OP_LOAD: {
       /* dest <- *lhs [rhs size] */
       PtxVal addr = operand_desc(&fn, &in->lhs);
-      TypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
+      MtlcTypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
       if (elem == MTLC_TYPE_VOID) {
         /* fall back to size + is_float */
         long long sz = (in->rhs.kind == IR_OPERAND_INT) ? in->rhs.int_value : 4;
@@ -742,7 +742,7 @@ static void emit_function(IRProgram *program, size_t fi, CodeGenerator *gen,
     case IR_OP_STORE: {
       /* *dest <- lhs [rhs size] */
       PtxVal addr = operand_desc(&fn, &in->dest);
-      TypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
+      MtlcTypeKind elem = addr.is_ptr ? addr.elem : MTLC_TYPE_VOID;
       if (elem == MTLC_TYPE_VOID) {
         long long sz = (in->rhs.kind == IR_OPERAND_INT) ? in->rhs.int_value : 4;
         if (in->is_float) {

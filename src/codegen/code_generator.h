@@ -3,10 +3,6 @@
 
 #include "../debug/debug_info.h"
 #include "../ir/ir.h"
-#include "../parser/ast.h"
-#include "../semantic/register_allocator.h"
-#include "../semantic/symbol_table.h"
-#include "../semantic/type_checker.h"
 #include "binary_emitter.h"
 #include <stdarg.h>
 #include <stdint.h>
@@ -15,9 +11,6 @@
 #include <string.h>
 
 typedef struct {
-  SymbolTable *symbol_table;
-  TypeChecker *type_checker;
-  RegisterAllocator *register_allocator;
   DebugInfo *debug_info;
   int current_label_id;
   char *current_function_name;
@@ -38,17 +31,12 @@ typedef struct {
 } CodeGenerator;
 
 // Function declarations
-CodeGenerator *code_generator_create(SymbolTable *symbol_table,
-                                     TypeChecker *type_checker,
-                                     RegisterAllocator *allocator);
-CodeGenerator *code_generator_create_with_debug(SymbolTable *symbol_table,
-                                                TypeChecker *type_checker,
-                                                RegisterAllocator *allocator,
-                                                DebugInfo *debug_info);
+CodeGenerator *code_generator_create(void);
+CodeGenerator *code_generator_create_with_debug(DebugInfo *debug_info);
 void code_generator_destroy(CodeGenerator *generator);
 void code_generator_set_ir_program(CodeGenerator *generator,
                                    IRProgram *ir_program);
-int code_generator_generate_program(CodeGenerator *generator, ASTNode *program);
+int code_generator_generate_program(CodeGenerator *generator);
 void code_generator_set_stack_trace_support(CodeGenerator *generator,
                                             int enable);
 void code_generator_set_debug_sidecar_emission(CodeGenerator *generator,
