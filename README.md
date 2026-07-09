@@ -11,7 +11,7 @@ Any frontend that lowers to the IR can drive the pipeline.
 &nbsp;![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-2b6cb0.svg)
 &nbsp;![Targets](https://img.shields.io/badge/targets-x86--64%20%7C%20ARM64%20%7C%20PTX%20%7C%20SPIR--V-2f855a.svg)
 
-[**API**](include/mtlc/) · [**Reference**](docs/libmtlc/README.md) · [**Docs**](docs/) · [**Mettle**](docs/LANGUAGE.md) · [**GitHub**](https://github.com/The-Mettle-Project/Mettle)
+[**API**](include/mtlc/) · [**Reference**](docs/libmtlc/README.md) · [**Docs**](docs/) · [**Mettle**](docs/LANGUAGE.md) · [**GitHub**](https://github.com/The-Mettle-Project/mettle-core)
 
 </div>
 
@@ -110,6 +110,29 @@ cc -Iinclude app.c bin/libmtlc.a -o app
 
 The produced `out.exe` exits with code 42. See the [getting-started guide](docs/embedding.md) and the full [API reference](docs/libmtlc/api.md).
 
+### Just the backend
+
+A frontend needs only the backend: the headers in [`include/mtlc/`](include/mtlc/) and the static library, nothing else from the tree. Fetch the prebuilt release into `./libmtlc`:
+
+```bash
+# Linux
+curl -fsSL https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/get-libmtlc.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/get-libmtlc.ps1 | iex
+```
+
+Then link against it (on Windows also add the system `-ldbghelp`):
+
+```bash
+cc  -Ilibmtlc/include app.c libmtlc/lib/libmtlc.a -o app        # Linux
+gcc -Ilibmtlc/include app.c libmtlc/lib/mtlc.lib  -o app.exe -ldbghelp  # Windows
+```
+
+Prefer to build it yourself from a checkout? `make dist-libmtlc` (Linux) or `.\tools\dist-libmtlc.ps1` (Windows) stages the same `libmtlc/` folder from source, and `make install-libmtlc PREFIX=/usr/local` does a system install with a pkg-config file.
+
 ## Frontend-agnostic, proven
 
 The backend carries no dependency on the Mettle frontend, and three suite gates enforce and demonstrate it:
@@ -124,12 +147,12 @@ To use the reference language instead of building your own, install the toolchai
 
 ```bash
 # Linux
-curl -fsSL https://raw.githubusercontent.com/The-Mettle-Project/Mettle/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/install.sh | sh
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/The-Mettle-Project/Mettle/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/install.ps1 | iex
 ```
 
 ```bash

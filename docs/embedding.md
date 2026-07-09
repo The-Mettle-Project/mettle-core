@@ -92,6 +92,8 @@ mtlc_context_destroy(ctx);
 
 ## Build your frontend
 
+Inside a checkout, build the library and link against it in place:
+
 ```bash
 # Windows, after .\build.bat
 gcc -Iinclude my_frontend.c bin/mtlc.lib -o my_frontend.exe -ldbghelp
@@ -99,6 +101,40 @@ gcc -Iinclude my_frontend.c bin/mtlc.lib -o my_frontend.exe -ldbghelp
 # Linux, after `make libmtlc`
 cc -Iinclude my_frontend.c bin/libmtlc.a -o my_frontend
 ```
+
+`-ldbghelp` on Windows satisfies the crash reporter's stack-walk imports; the
+library needs nothing else beyond system libraries.
+
+## Getting just the backend
+
+You do not need the whole repository in your project. The backend is exactly two
+things: the headers in `include/mtlc/` and the static library. The one-line
+fetchers download the prebuilt release into `./libmtlc`:
+
+```bash
+# Linux
+curl -fsSL https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/get-libmtlc.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/The-Mettle-Project/mettle-core/main/get-libmtlc.ps1 | iex
+```
+
+Both accept overrides: a specific tag (`LIBMTLC_VERSION`) and a target directory
+(`LIBMTLC_DIR`, default `./libmtlc`).
+
+From a checkout instead, stage the same folder from source with
+`make dist-libmtlc` (Linux) or `.\tools\dist-libmtlc.ps1` (Windows), or do a
+system install with a pkg-config file:
+
+```bash
+make install-libmtlc PREFIX=/usr/local   # honors DESTDIR
+cc $(pkg-config --cflags --libs libmtlc) my_frontend.c
+```
+
+The Mettle driver, standard library, and runtime are not part of any of this; a
+frontend links the library alone.
 
 ## Scope of the builder today
 

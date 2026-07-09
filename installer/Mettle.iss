@@ -6,7 +6,7 @@
 ; CI builds this in release.yml and attaches Mettle-Setup.exe to the Release.
 ;
 ; WizardStyle uses Inno Setup 6's built-in modern UI (HiDPI, light/dark aware).
-; No custom bitmap assets — branding comes from SetupIconFile and copy in [Messages].
+; No custom bitmap assets; branding comes from SetupIconFile and copy in [Messages].
 ;
 ; The installer lets the user choose a per-user or all-users install at launch
 ; (PrivilegesRequiredOverridesAllowed=dialog). Install location, PATH scope, and
@@ -18,7 +18,7 @@
 #endif
 
 #define MyAppName "Mettle"
-#define MyRepoUrl "https://github.com/The-Mettle-Project/Mettle"
+#define MyRepoUrl "https://github.com/The-Mettle-Project/mettle-core"
 
 [Setup]
 AppId={{D9F4D8EF-0B2C-4B37-A9B0-5A6E30C3D2A1}

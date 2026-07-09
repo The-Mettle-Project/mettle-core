@@ -5630,19 +5630,17 @@ catch {
   Write-CaseResult -Name "compiler_ice_report" -Passed $false -Reason $_.Exception.Message
 }
 
-# PTX backend validity gate. Emits the real GPU kernel corpus and the stress
-# corpus to PTX and round-trips each through ptxas (NVIDIA's assembler) -- the
-# authoritative check that the emitted PTX is well-formed. Catches emitter
-# regressions that produce syntactically/typed-invalid PTX. Skipped when the
-# CUDA toolkit (ptxas) is absent. Semantic (GPU-execution) checks live in
-# examples/llm/qwen3/gpu/dgpu_check.mettle (needs a GPU, so not in this gate).
+# PTX backend validity gate. Emits the self-contained GPU compute-kernel fixture
+# plus the vadd kernel to PTX and round-trips each through ptxas (NVIDIA's
+# assembler) -- the authoritative check that the emitted PTX is well-formed.
+# Catches emitter regressions that produce syntactically/typed-invalid PTX.
+# Skipped when the CUDA toolkit (ptxas) is absent.
 $ptxas = Get-Command ptxas -ErrorAction SilentlyContinue
 if (-not $ptxas) {
   Write-Host "[SKIP] ptx_emit_validate (ptxas not found)"
 }
 else {
-  foreach ($src in @("examples/llm/qwen3/gpu/kernels.mettle",
-                     "examples/llm/qwen3/gpu/ptx_stress.mettle",
+  foreach ($src in @("tests/gpu/compute_kernels.mettle",
                      "examples/gpu_vadd/vadd_kernel.mettle")) {
     $total++
     $name = "ptx_emit_" + [System.IO.Path]::GetFileNameWithoutExtension($src)
@@ -5663,7 +5661,8 @@ else {
   }
 }
 
-# SPIR-V backend validity gate. Emits the same GPU kernel corpus to SPIR-V
+# SPIR-V backend validity gate. Emits the self-contained GPU compute-kernel
+# fixture (tests/gpu/compute_kernels.mettle) plus the vadd kernel to SPIR-V
 # binary modules (--emit-spirv, the OpenCL 1.2 sibling of --emit-ptx) and
 # structurally validates each word stream: little-endian, correct magic, a
 # consistent word-count walk that lands exactly on EOF, an in-range id bound,
@@ -5697,8 +5696,7 @@ function Test-SpirvModule([string]$path) {
   }
   return $entries.Count
 }
-foreach ($src in @("examples/llm/qwen3/gpu/kernels.mettle",
-                   "examples/llm/qwen3/gpu/ptx_stress.mettle",
+foreach ($src in @("tests/gpu/compute_kernels.mettle",
                    "examples/gpu_vadd/vadd_kernel.mettle")) {
   $total++
   $name = "spirv_emit_" + [System.IO.Path]::GetFileNameWithoutExtension($src)

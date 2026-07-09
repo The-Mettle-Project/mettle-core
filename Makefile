@@ -18,6 +18,11 @@ BINDIR = bin
 STDLIBDIR = stdlib
 RUNTIMEDIR = src/runtime
 
+# Install prefix for `make install` / `make install-libmtlc` (honors DESTDIR).
+PREFIX ?= /usr/local
+# Reported by mtlc_version(); keep in sync with src/mtlc_api.c.
+LIBMTLC_VERSION = 0.1.0
+
 # Source files
 LEXER_SOURCES = $(SRCDIR)/lexer/lexer.c
 PARSER_SOURCES = $(SRCDIR)/parser/parser.c $(SRCDIR)/parser/ast.c
@@ -69,15 +74,15 @@ AR = ar
 LIBMTLC = $(BINDIR)/libmtlc.a
 TARGET = $(BINDIR)/mettle
 
-.PHONY: all clean test install bundle-stdlib bundle-runtime libmtlc
+.PHONY: all clean test install install-libmtlc dist-libmtlc bundle-stdlib bundle-runtime libmtlc
 
 all: $(TARGET) bundle-stdlib bundle-runtime
 libmtlc: $(LIBMTLC)
 
-# The static archive is the backend product. It has unresolved references to the
-# frontend (codegen still re-derives some types from the frontend type system --
-# the documented Phase-2 bridge); those resolve when a frontend links against it,
-# as the mettle driver does below.
+# The static archive is the backend product, and it is self-contained: it
+# references only libc and system libraries, never the Mettle frontend (the
+# libmtlc_selfcontained test gate enforces that). A frontend links it alone,
+# as the mettle driver and examples/calc both do.
 $(LIBMTLC): $(BACKEND_OBJECTS) | $(BINDIR)
 	rm -f $@
 	$(AR) rcs $@ $(BACKEND_OBJECTS)
@@ -128,11 +133,31 @@ test: $(TARGET)
 	$(CC) $(CFLAGS) -D_GNU_SOURCE tests/crash_handler_test.c src/runtime/crash_handler.c -Isrc -o $(BINDIR)/crash_handler_test
 	@$(BINDIR)/crash_handler_test
 
+# Install the full reference toolchain (the mettle driver + stdlib + runtime).
 install: $(TARGET) bundle-stdlib bundle-runtime
-	mkdir -p /usr/local/bin /usr/local/stdlib /usr/local/runtime
-	cp $(TARGET) /usr/local/bin/
-	cp -r $(BINDIR)/stdlib/* /usr/local/stdlib/
-	cp -r $(BINDIR)/runtime/* /usr/local/runtime/
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/stdlib $(DESTDIR)$(PREFIX)/runtime
+	cp $(TARGET) $(DESTDIR)$(PREFIX)/bin/
+	cp -r $(BINDIR)/stdlib/* $(DESTDIR)$(PREFIX)/stdlib/
+	cp -r $(BINDIR)/runtime/* $(DESTDIR)$(PREFIX)/runtime/
+
+# Install ONLY the backend for embedding: the public headers, the static
+# library, and a pkg-config file. This is all a frontend developer needs
+# (`cc $(pkg-config --cflags --libs libmtlc) app.c`).
+install-libmtlc: $(LIBMTLC)
+	mkdir -p $(DESTDIR)$(PREFIX)/include/mtlc $(DESTDIR)$(PREFIX)/lib/pkgconfig
+	cp include/mtlc/*.h $(DESTDIR)$(PREFIX)/include/mtlc/
+	cp $(LIBMTLC) $(DESTDIR)$(PREFIX)/lib/
+	printf 'prefix=%s\nlibdir=$${prefix}/lib\nincludedir=$${prefix}/include\n\nName: libmtlc\nDescription: Frontend-agnostic native compiler backend\nVersion: %s\nLibs: -L$${libdir} -lmtlc\nCflags: -I$${includedir}\n' '$(PREFIX)' '$(LIBMTLC_VERSION)' > $(DESTDIR)$(PREFIX)/lib/pkgconfig/libmtlc.pc
+	@echo "installed libmtlc $(LIBMTLC_VERSION) to $(DESTDIR)$(PREFIX) (include/mtlc, libmtlc.a, libmtlc.pc)"
+
+# Stage the backend into ./dist/libmtlc (headers + lib) with no root needed:
+# a self-contained folder to copy into another project or zip up.
+dist-libmtlc: $(LIBMTLC)
+	rm -rf dist/libmtlc
+	mkdir -p dist/libmtlc/include/mtlc dist/libmtlc/lib
+	cp include/mtlc/*.h dist/libmtlc/include/mtlc/
+	cp $(LIBMTLC) dist/libmtlc/lib/
+	@echo "staged dist/libmtlc (link with: cc -Idist/libmtlc/include app.c dist/libmtlc/lib/libmtlc.a)"
 
 .PHONY: debug
 debug: CFLAGS += -DDEBUG

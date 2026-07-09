@@ -1,10 +1,14 @@
 bin/
 obj/
+dist/
 .claude/
 .cursor/
 web/
 .tmp/
-lib/
+# Anchored to the repo root: only the top-level lib/ build dir. A bare `lib/`
+# also matched tests/lib/ (the import-test fixture modules), so they never got
+# committed and every import test failed on a fresh CI checkout.
+/lib/
 tests/_tmp_*
 tmp_repro/
 .html

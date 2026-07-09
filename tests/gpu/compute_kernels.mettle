@@ -1,0 +1,113 @@
+// Self-contained GPU compute kernels for the --emit-ptx / --emit-spirv backend
+// validity gates. No external data and no LLM: generic vector, byte, and flag
+// compute that exercises the GPU code paths the emitters must handle, namely
+// thread-index intrinsics, guarded stores, counted loops with float and int
+// accumulators, int/float/byte casts, bitwise ops, the f32 math and fp16
+// intrinsics, a workgroup barrier, and short-circuit &&/|| with float
+// truthiness (the SPIR-V structurizer's hard cases).
+
+extern fn gpu_tid_x() -> int32 = "gpu_tid_x";
+extern fn gpu_ntid_x() -> int32 = "gpu_ntid_x";
+extern fn gpu_ctaid_x() -> int32 = "gpu_ctaid_x";
+extern fn sqrtf(x: float32) -> float32 = "sqrtf";
+extern fn fabsf(x: float32) -> float32 = "fabsf";
+extern fn h2f(bits: uint16) -> float32 = "h2f";
+extern fn f2h(x: float32) -> uint16 = "f2h";
+extern fn gpu_barrier() = "gpu_barrier";
+
+// c[i] = a[i] + b[i]   -- the basic guarded load/store kernel.
+fn vadd(a: float32*, b: float32*, c: float32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    c[i] = a[i] + b[i];
+  }
+}
+
+// y[i] = alpha * x[i] + y[i]   -- a scalar parameter plus a fused multiply-add.
+fn saxpy(alpha: float32, x: float32*, y: float32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    y[i] = alpha * x[i] + y[i];
+  }
+}
+
+// out[o] = sqrt(sum_k inp[o*cols + k]^2)   -- counted loop, float accumulator,
+// nested index math, and a math intrinsic (generic per-row L2 norm).
+fn row_norm(inp: float32*, out: float32*, rows: int32, cols: int32) {
+  var o: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (o < rows) {
+    var acc: float32 = 0.0;
+    var k: int32 = 0;
+    while (k < cols) {
+      var v: float32 = inp[o * cols + k];
+      acc = acc + v * v;
+      k = k + 1;
+    }
+    out[o] = sqrtf(acc);
+  }
+}
+
+// Unpack packed 4-bit nibbles to floats: uint8 load, & and >>, int->float cast.
+fn unpack_nibbles(src: uint8*, dst: float32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    var b: int32 = (int32)src[i];
+    var lo: int32 = b & 15;
+    var hi: int32 = (b >> 4) & 15;
+    dst[i * 2] = (float32)(lo - 8);
+    dst[i * 2 + 1] = (float32)(hi - 8);
+  }
+}
+
+// Clamp |x| into [0, 1] with a branch (if without else).
+fn clamp_abs01(x: float32*, out: float32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    var v: float32 = fabsf(x[i]);
+    if (v > 1.0) { v = 1.0; }
+    out[i] = v;
+  }
+}
+
+// fp16 round-trip through f32: h2f then f2h (the fp16 bit-pattern intrinsics).
+fn fp16_roundtrip(src: uint16*, dst: uint16*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    var f: float32 = h2f(src[i]);
+    dst[i] = f2h(f + 1.0);
+  }
+}
+
+// Predicate flags: every comparison, short-circuit && and ||, and float
+// truthiness. These are exactly the branch shapes the SPIR-V structurizer and
+// the PTX predicate lowering must get right.
+fn flags(a: int32*, b: int32*, fx: float32*, out: int32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  if (i < n) {
+    var x: int32 = a[i];
+    var y: int32 = b[i];
+    var r: int32 = 0;
+    if (x < y)  { r = r + 1; }
+    if (x <= y) { r = r + 2; }
+    if (x >= y) { r = r + 4; }
+    if (x == y) { r = r + 8; }
+    if (x != y) { r = r + 16; }
+    if (x < y && y < 100) { r = r + 32; }
+    if (x > y || y > 100) { r = r + 64; }
+    if (fx[i]) { r = r + 128; }
+    out[i] = r;
+  }
+}
+
+// A workgroup barrier between a load phase and a per-block write.
+fn block_first(x: float32*, partial: float32*, n: int32) {
+  var i: int32 = gpu_ctaid_x() * gpu_ntid_x() + gpu_tid_x();
+  var m: float32 = 0.0;
+  if (i < n) {
+    m = x[i];
+  }
+  gpu_barrier();
+  if (gpu_tid_x() == 0) {
+    partial[gpu_ctaid_x()] = m;
+  }
+}
