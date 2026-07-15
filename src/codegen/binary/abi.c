@@ -1129,6 +1129,20 @@ MtlcType *code_generator_binary_get_operand_type_in_context(
     }
   }
 
+  /* Builder-API temps carry no DECLARE_LOCAL; their defining instruction
+   * bakes the result type into value_type (mtlc_binary/mtlc_cast/mtlc_load).
+   * Without this an unsigned temp operand resolves NULL -> "signed" and
+   * miscompiles unsigned / % >> and compares in API-built modules. */
+  for (size_t i = 0; i < ir_function->instruction_count; i++) {
+    const IRInstruction *instruction = &ir_function->instructions[i];
+    if (instruction->value_type &&
+        instruction->dest.kind == IR_OPERAND_SYMBOL &&
+        instruction->dest.name &&
+        strcmp(instruction->dest.name, operand->name) == 0) {
+      return instruction->value_type;
+    }
+  }
+
   return NULL;
 }
 

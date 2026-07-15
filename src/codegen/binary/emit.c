@@ -4326,6 +4326,8 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
   const char *op = instruction->text;
   unsigned char condition_opcode = 0;
   int is_compare = 0;
+  /* builder-API modules mark unsigned semantics on the instruction */
+  int op_unsigned = instruction->is_unsigned != 0;
 
   op = instruction->text;
   if (!instruction->is_float &&
@@ -4338,11 +4340,12 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
     MtlcType *dividend_type = code_generator_binary_get_operand_type_in_context(
         generator, context, &instruction->lhs);
     int dividend_unsigned =
-        dividend_type &&
-        (dividend_type->kind == MTLC_TYPE_UINT8 ||
-         dividend_type->kind == MTLC_TYPE_UINT16 ||
-         dividend_type->kind == MTLC_TYPE_UINT32 ||
-         dividend_type->kind == MTLC_TYPE_UINT64);
+        instruction->is_unsigned ||
+        (dividend_type &&
+         (dividend_type->kind == MTLC_TYPE_UINT8 ||
+          dividend_type->kind == MTLC_TYPE_UINT16 ||
+          dividend_type->kind == MTLC_TYPE_UINT32 ||
+          dividend_type->kind == MTLC_TYPE_UINT64));
 
     if (dividend_unsigned && instruction->rhs.int_value >= 2) {
       int u_handled = 0;
@@ -4534,9 +4537,10 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
             ok = binary_emit_xor_reg_imm32(&context->code, dest_reg,
                                            (uint32_t)(int32_t)immediate);
           } else { /* << or >> */
-            ok = binary_emit_shift_reg_imm8(&context->code,
-                                            strcmp(op, "<<") == 0 ? 4 : 7,
-                                            dest_reg, (unsigned char)immediate);
+            ok = binary_emit_shift_reg_imm8(
+                &context->code,
+                strcmp(op, "<<") == 0 ? 4 : (op_unsigned ? 5 : 7), dest_reg,
+                (unsigned char)immediate);
           }
           if (!ok) {
             goto emit_failure;
@@ -4595,7 +4599,8 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
       } else if ((strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0) &&
                  immediate_on_rhs && immediate >= 0 && immediate < 64) {
         if (!binary_emit_shift_reg_imm8(
-                &context->code, strcmp(op, "<<") == 0 ? 4 : 7,
+                &context->code,
+                strcmp(op, "<<") == 0 ? 4 : (op_unsigned ? 5 : 7),
                 BINARY_GP_RAX, (unsigned char)immediate)) {
           goto emit_failure;
         }
@@ -4622,13 +4627,13 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
         } else if (strcmp(op, "!=") == 0) {
           condition_opcode = 0x95;
         } else if (strcmp(op, "<") == 0) {
-          condition_opcode = 0x9C;
+          condition_opcode = op_unsigned ? 0x92 : 0x9C;
         } else if (strcmp(op, "<=") == 0) {
-          condition_opcode = 0x9E;
+          condition_opcode = op_unsigned ? 0x96 : 0x9E;
         } else if (strcmp(op, ">") == 0) {
-          condition_opcode = 0x9F;
+          condition_opcode = op_unsigned ? 0x97 : 0x9F;
         } else {
-          condition_opcode = 0x9D;
+          condition_opcode = op_unsigned ? 0x93 : 0x9D;
         }
 
         if (!binary_emit_cmp_reg_imm32(&context->code, BINARY_GP_RAX,
@@ -4751,11 +4756,12 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
     MtlcType *rt_dividend_type = code_generator_binary_get_operand_type_in_context(
         generator, context, &instruction->lhs);
     int rt_unsigned =
-        rt_dividend_type &&
-        (rt_dividend_type->kind == MTLC_TYPE_UINT8 ||
-         rt_dividend_type->kind == MTLC_TYPE_UINT16 ||
-         rt_dividend_type->kind == MTLC_TYPE_UINT32 ||
-         rt_dividend_type->kind == MTLC_TYPE_UINT64);
+        op_unsigned ||
+        (rt_dividend_type &&
+         (rt_dividend_type->kind == MTLC_TYPE_UINT8 ||
+          rt_dividend_type->kind == MTLC_TYPE_UINT16 ||
+          rt_dividend_type->kind == MTLC_TYPE_UINT32 ||
+          rt_dividend_type->kind == MTLC_TYPE_UINT64));
     if (rt_unsigned) {
       if (!binary_emit_xor_reg_reg32(&context->code, BINARY_GP_RDX) ||
           !binary_emit_div_reg(&context->code, BINARY_GP_R10)) {
@@ -4794,7 +4800,8 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
   } else if (strcmp(op, ">>") == 0) {
     if (!binary_emit_mov_reg_reg(&context->code, BINARY_GP_RCX,
                                  BINARY_GP_R10) ||
-        !binary_emit_shift_reg_cl(&context->code, 7, BINARY_GP_RAX)) {
+        !binary_emit_shift_reg_cl(&context->code, op_unsigned ? 5 : 7,
+                                  BINARY_GP_RAX)) {
       goto emit_failure;
     }
   } else if (strcmp(op, "&&") == 0) {
@@ -4820,16 +4827,16 @@ static int binary_emit_binary_integer(CodeGenerator *generator,
     condition_opcode = 0x95;
     is_compare = 1;
   } else if (strcmp(op, "<") == 0) {
-    condition_opcode = 0x9C;
+    condition_opcode = op_unsigned ? 0x92 : 0x9C;
     is_compare = 1;
   } else if (strcmp(op, "<=") == 0) {
-    condition_opcode = 0x9E;
+    condition_opcode = op_unsigned ? 0x96 : 0x9E;
     is_compare = 1;
   } else if (strcmp(op, ">") == 0) {
-    condition_opcode = 0x9F;
+    condition_opcode = op_unsigned ? 0x97 : 0x9F;
     is_compare = 1;
   } else if (strcmp(op, ">=") == 0) {
-    condition_opcode = 0x9D;
+    condition_opcode = op_unsigned ? 0x93 : 0x9D;
     is_compare = 1;
   } else {
     code_generator_set_error(generator,

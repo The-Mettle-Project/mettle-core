@@ -13,6 +13,7 @@
 #include "common.h"
 #include "ir/ir.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -431,6 +432,9 @@ MtlcValue mtlc_binary(MtlcFn *fn, const char *op, MtlcValue lhs, MtlcValue rhs,
   if (mtlc_type_is_float(result_type)) {
     inst.is_float = 1;
     inst.float_bits = (int)(result_type->size * 8);
+  } else if (mtlc_type_is_unsigned(result_type)) {
+    /* unsigned result type selects unsigned / % >> and compares */
+    inst.is_unsigned = 1;
   }
   emit(fn, &inst);
   return res;
@@ -511,6 +515,90 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
   inst.value_type = (MtlcType *)return_type;
   emit(fn, &inst);
   free(argv); /* elements were cloned by append; free the container only */
+  return res;
+}
+
+/* Real address of a function symbol (defined here or a declared extern):
+ * IR_OP_ADDRESS_OF on a function name lowers to a RIP-relative lea with a
+ * relocation, so the value is callable by the OS/CRT and comparable. */
+MtlcValue mtlc_function_address(MtlcFn *fn, const char *name) {
+  if (!fn || !name) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  MtlcValue res = fresh_temp(fn);
+  const IROperand *dest = value_operand(fn, res);
+  if (!dest) {
+    return MTLC_NO_VALUE;
+  }
+  IRInstruction inst = {0};
+  inst.op = IR_OP_ADDRESS_OF;
+  inst.dest = *dest;
+  inst.lhs = ir_operand_symbol(name);
+  if (inst.lhs.kind != IR_OPERAND_SYMBOL) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  emit(fn, &inst);
+  ir_operand_destroy(&inst.lhs);
+  return res;
+}
+
+/* Call through a function-pointer VALUE (e.g. one produced by
+ * mtlc_function_address or loaded from memory). Arguments follow the same
+ * ABI classification as direct calls; without a typed fn-pointer symbol the
+ * backend classifies every argument as integer/pointer. */
+MtlcValue mtlc_call_indirect(MtlcFn *fn, MtlcValue callee,
+                             const MtlcValue *args, size_t arg_count,
+                             const MtlcType *return_type) {
+  if (!fn || !return_type) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  const IROperand *code = value_operand(fn, callee);
+  if (!code) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  IROperand code_copy = *code;
+  IROperand *argv = NULL;
+  if (arg_count > 0) {
+    argv = calloc(arg_count, sizeof(IROperand));
+    if (!argv) {
+      fn->builder->error = 1;
+      return MTLC_NO_VALUE;
+    }
+    for (size_t i = 0; i < arg_count; i++) {
+      const IROperand *a = value_operand(fn, args[i]);
+      if (!a) {
+        free(argv);
+        fn->builder->error = 1;
+        return MTLC_NO_VALUE;
+      }
+      argv[i] = *a; /* shallow alias; append clones */
+    }
+  }
+  record_type(fn->builder, return_type);
+  int is_void = (return_type->kind == MTLC_TYPE_VOID);
+  MtlcValue res = is_void ? MTLC_NO_VALUE : fresh_temp(fn);
+  IRInstruction inst = {0};
+  inst.op = IR_OP_CALL_INDIRECT;
+  if (!is_void) {
+    const IROperand *dest = value_operand(fn, res);
+    if (dest) {
+      inst.dest = *dest;
+    }
+  }
+  inst.lhs = code_copy;
+  inst.arguments = argv;
+  inst.argument_count = arg_count;
+  inst.value_type = (MtlcType *)return_type;
+  emit(fn, &inst);
+  free(argv);
   return res;
 }
 

@@ -355,6 +355,7 @@ int ir_function_insert_instruction(IRFunction *function, size_t index,
   slot->op = instruction->op;
   slot->location = instruction->location;
   slot->is_float = instruction->is_float;
+  slot->is_unsigned = instruction->is_unsigned;
   slot->float_bits = instruction->float_bits;
   slot->ast_ref = instruction->ast_ref;
   slot->value_type = instruction->value_type;
@@ -777,11 +778,107 @@ IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
   return dst;
 }
 
+/* Name -> module-symbol index for ir_program_lookup_symbol.
+ *
+ * The linear scan below is called for every symbol reference codegen resolves,
+ * and a frontend with many string literals pushes module_symbol_count into the
+ * tens of thousands — O(references x symbols) strcmp dominated emission on
+ * large programs. Cache an open-addressing table keyed on the program, its
+ * symbol count, and the array's base address (module_symbols reallocs as
+ * symbols are added, so the table stores indices, never pointers), rebuilding
+ * whenever any of those change. Same cure BinaryIRFunctionIndex applies to
+ * function lookup in the binary backend. */
+typedef struct {
+  size_t *slots; /* index+1 into module_symbols; 0 = empty */
+  size_t slot_count; /* power of two */
+  const IRProgram *program;
+  const IRModuleSymbol *symbols_base;
+  size_t symbol_count;
+} IRSymbolIndex;
+
+static IRSymbolIndex g_ir_symbol_index = {0};
+
+static void ir_symbol_index_reset(void) {
+  free(g_ir_symbol_index.slots);
+  g_ir_symbol_index.slots = NULL;
+  g_ir_symbol_index.slot_count = 0;
+  g_ir_symbol_index.program = NULL;
+  g_ir_symbol_index.symbols_base = NULL;
+  g_ir_symbol_index.symbol_count = 0;
+}
+
+/* Returns 1 with the table ready, 0 on allocation failure (callers fall back
+ * to the linear scan rather than miss real symbols). */
+static int ir_symbol_index_ensure(const IRProgram *program) {
+  if (g_ir_symbol_index.program == program &&
+      g_ir_symbol_index.symbols_base == program->module_symbols &&
+      g_ir_symbol_index.symbol_count == program->module_symbol_count &&
+      g_ir_symbol_index.slots) {
+    return 1;
+  }
+
+  ir_symbol_index_reset();
+
+  size_t slot_count = 16;
+  while (slot_count < program->module_symbol_count * 2) {
+    slot_count *= 2;
+  }
+  size_t *slots = calloc(slot_count, sizeof(*slots));
+  if (!slots) {
+    return 0;
+  }
+
+  g_ir_symbol_index.slots = slots;
+  g_ir_symbol_index.slot_count = slot_count;
+  g_ir_symbol_index.program = program;
+  g_ir_symbol_index.symbols_base = program->module_symbols;
+  g_ir_symbol_index.symbol_count = program->module_symbol_count;
+
+  size_t mask = slot_count - 1;
+  for (size_t i = 0; i < program->module_symbol_count; i++) {
+    const char *name = program->module_symbols[i].name;
+    if (!name) {
+      continue;
+    }
+    size_t h = mettle_fnv1a_hash(name) & mask;
+    int duplicate = 0;
+    while (slots[h]) {
+      /* First entry with a given name wins, matching the linear scan. */
+      if (strcmp(program->module_symbols[slots[h] - 1].name, name) == 0) {
+        duplicate = 1;
+        break;
+      }
+      h = (h + 1) & mask;
+    }
+    if (!duplicate) {
+      slots[h] = i + 1;
+    }
+  }
+
+  return 1;
+}
+
 const IRModuleSymbol *ir_program_lookup_symbol(const IRProgram *program,
                                                const char *name) {
   if (!program || !name) {
     return NULL;
   }
+
+  if (ir_symbol_index_ensure(program)) {
+    size_t mask = g_ir_symbol_index.slot_count - 1;
+    size_t h = mettle_fnv1a_hash(name) & mask;
+    while (g_ir_symbol_index.slots[h]) {
+      const IRModuleSymbol *sym =
+          &program->module_symbols[g_ir_symbol_index.slots[h] - 1];
+      if (strcmp(sym->name, name) == 0) {
+        return sym;
+      }
+      h = (h + 1) & mask;
+    }
+    return NULL;
+  }
+
+  /* Fallback: index allocation failed; behave as before. */
   for (size_t i = 0; i < program->module_symbol_count; i++) {
     if (strcmp(program->module_symbols[i].name, name) == 0) {
       return &program->module_symbols[i];

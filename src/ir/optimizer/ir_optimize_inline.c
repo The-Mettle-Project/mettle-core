@@ -315,6 +315,7 @@ int ir_clone_instruction_plain(const IRInstruction *source,
   out->op = source->op;
   out->location = source->location;
   out->is_float = source->is_float;
+  out->is_unsigned = source->is_unsigned;
   out->float_bits = source->float_bits;
   /* is_unsigned carries codegen-critical signedness: unsigned div/rem/shr and
    * zero-extending uint8/16/32 loads. Dropping it here (it only runs at -O)
@@ -371,6 +372,7 @@ static int ir_clone_instruction_for_inline(const IRInstruction *source,
   out->op = source->op;
   out->location = source->location;
   out->is_float = source->is_float;
+  out->is_unsigned = source->is_unsigned;
   out->float_bits = source->float_bits;
   out->is_unsigned = source->is_unsigned; /* unsigned div/shr + zero-ext loads */
   out->allocates = source->allocates;     /* string-concat allocation marker */
@@ -606,6 +608,7 @@ static int ir_inline_call_instruction(IRInstructionVector *vector,
          * any f64->f32 conversion the return ABI would have, and so a later
          * coalescing pass cannot mistake it for a width-preserving copy. */
         emitted.is_float = source->is_float;
+        emitted.is_unsigned = source->is_unsigned;
         emitted.float_bits = source->float_bits;
         if (!ir_operand_clone(&call_instruction->dest, &emitted.dest) ||
             !ir_inline_rewrite_operand(&source->lhs, &emitted.lhs, &symbol_map,

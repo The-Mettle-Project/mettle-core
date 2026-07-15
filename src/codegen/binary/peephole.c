@@ -20,8 +20,8 @@ int code_generator_binary_is_compare_operator(const char *op) {
           strcmp(op, ">") == 0 || strcmp(op, ">=") == 0);
 }
 
-int code_generator_binary_compare_false_jcc(const char *op,
-                                                   unsigned char *opcode_out) {
+int code_generator_binary_compare_false_jcc_u(const char *op, int is_unsigned,
+                                              unsigned char *opcode_out) {
   if (!op || !opcode_out) {
     return 0;
   }
@@ -35,27 +35,32 @@ int code_generator_binary_compare_false_jcc(const char *op,
     return 1;
   }
   if (strcmp(op, "<") == 0) {
-    *opcode_out = 0x8D; /* jge */
+    *opcode_out = is_unsigned ? 0x83 /* jae */ : 0x8D; /* jge */
     return 1;
   }
   if (strcmp(op, "<=") == 0) {
-    *opcode_out = 0x8F; /* jg */
+    *opcode_out = is_unsigned ? 0x87 /* ja */ : 0x8F; /* jg */
     return 1;
   }
   if (strcmp(op, ">") == 0) {
-    *opcode_out = 0x8E; /* jle */
+    *opcode_out = is_unsigned ? 0x86 /* jbe */ : 0x8E; /* jle */
     return 1;
   }
   if (strcmp(op, ">=") == 0) {
-    *opcode_out = 0x8C; /* jl */
+    *opcode_out = is_unsigned ? 0x82 /* jb */ : 0x8C; /* jl */
     return 1;
   }
 
   return 0;
 }
 
-int code_generator_binary_compare_true_cmov(const char *op,
+int code_generator_binary_compare_false_jcc(const char *op,
                                                    unsigned char *opcode_out) {
+  return code_generator_binary_compare_false_jcc_u(op, 0, opcode_out);
+}
+
+int code_generator_binary_compare_true_cmov_u(const char *op, int is_unsigned,
+                                              unsigned char *opcode_out) {
   if (!op || !opcode_out) {
     return 0;
   }
@@ -69,23 +74,28 @@ int code_generator_binary_compare_true_cmov(const char *op,
     return 1;
   }
   if (strcmp(op, "<") == 0) {
-    *opcode_out = 0x4C; /* cmovl */
+    *opcode_out = is_unsigned ? 0x42 /* cmovb */ : 0x4C; /* cmovl */
     return 1;
   }
   if (strcmp(op, "<=") == 0) {
-    *opcode_out = 0x4E; /* cmovle */
+    *opcode_out = is_unsigned ? 0x46 /* cmovbe */ : 0x4E; /* cmovle */
     return 1;
   }
   if (strcmp(op, ">") == 0) {
-    *opcode_out = 0x4F; /* cmovg */
+    *opcode_out = is_unsigned ? 0x47 /* cmova */ : 0x4F; /* cmovg */
     return 1;
   }
   if (strcmp(op, ">=") == 0) {
-    *opcode_out = 0x4D; /* cmovge */
+    *opcode_out = is_unsigned ? 0x43 /* cmovae */ : 0x4D; /* cmovge */
     return 1;
   }
 
   return 0;
+}
+
+int code_generator_binary_compare_true_cmov(const char *op,
+                                                   unsigned char *opcode_out) {
+  return code_generator_binary_compare_true_cmov_u(op, 0, opcode_out);
 }
 
 int code_generator_binary_operand_uses_temp(const IROperand *operand,
@@ -277,7 +287,8 @@ int code_generator_binary_emit_compare_false_branch(
 
   if (!generator || !context || !compare || !target_label ||
       target_label[0] == '\0' ||
-      !code_generator_binary_compare_false_jcc(compare->text,
+      !code_generator_binary_compare_false_jcc_u(compare->text,
+                                                  compare->is_unsigned,
                                                &branch_opcode)) {
     return 0;
   }
@@ -998,7 +1009,7 @@ int code_generator_binary_emit_compare_false_branch_from_rax(
 
   if (!generator || !context || !compare || !compare->text || !rhs ||
       !target_label ||
-      !code_generator_binary_compare_false_jcc(compare->text, &branch_opcode)) {
+      !code_generator_binary_compare_false_jcc_u(compare->text, compare->is_unsigned, &branch_opcode)) {
     return 0;
   }
 
@@ -1114,7 +1125,7 @@ static int code_generator_binary_try_emit_and_mask_compare_false_branch(
   if (!binary_emit_test_reg_imm32(
           &context->code, has_source_register ? source_register : BINARY_GP_RAX,
           (uint32_t)(int32_t)mask_value) ||
-      !code_generator_binary_compare_false_jcc(compare->text, &branch_opcode) ||
+      !code_generator_binary_compare_false_jcc_u(compare->text, compare->is_unsigned, &branch_opcode) ||
       !binary_emit_jcc_placeholder(&context->code, branch_opcode,
                                    &displacement_offset) ||
       !binary_label_fixup_table_add(&context->label_fixups, target_label,
@@ -1251,7 +1262,7 @@ int code_generator_binary_try_emit_compare_assign_diamond(
   end_label = &function->instructions[instruction_index + 5];
 
   if (!compare || compare->op != IR_OP_BINARY || compare->is_float ||
-      !code_generator_binary_compare_true_cmov(compare->text, &cmov_opcode) ||
+      !code_generator_binary_compare_true_cmov_u(compare->text, compare->is_unsigned, &cmov_opcode) ||
       compare->dest.kind != IR_OPERAND_TEMP || !compare->dest.name ||
       !branch || branch->op != IR_OP_BRANCH_ZERO || !branch->text ||
       !code_generator_binary_operand_uses_temp(&branch->lhs,
@@ -1331,6 +1342,7 @@ static int code_generator_binary_next_non_nop_index(const IRFunction *function,
 }
 
 static int code_generator_binary_compare_false_cmov(const char *op,
+                                                    int is_unsigned,
                                                     unsigned char *opcode_out) {
   if (!op || !opcode_out) {
     return 0;
@@ -1344,19 +1356,19 @@ static int code_generator_binary_compare_false_cmov(const char *op,
     return 1;
   }
   if (strcmp(op, "<") == 0) {
-    *opcode_out = 0x4D; /* cmovge */
+    *opcode_out = is_unsigned ? 0x43 /* cmovae */ : 0x4D; /* cmovge */
     return 1;
   }
   if (strcmp(op, "<=") == 0) {
-    *opcode_out = 0x4F; /* cmovg */
+    *opcode_out = is_unsigned ? 0x47 /* cmova */ : 0x4F; /* cmovg */
     return 1;
   }
   if (strcmp(op, ">") == 0) {
-    *opcode_out = 0x4E; /* cmovle */
+    *opcode_out = is_unsigned ? 0x46 /* cmovbe */ : 0x4E; /* cmovle */
     return 1;
   }
   if (strcmp(op, ">=") == 0) {
-    *opcode_out = 0x4C; /* cmovl */
+    *opcode_out = is_unsigned ? 0x42 /* cmovb */ : 0x4C; /* cmovl */
     return 1;
   }
   return 0;
@@ -1437,8 +1449,8 @@ int code_generator_binary_try_emit_compare_update_pair_diamond(
 
   if (!compare || compare->op != IR_OP_BINARY || compare->is_float ||
       !compare->text ||
-      !code_generator_binary_compare_true_cmov(compare->text, &true_cmov) ||
-      !code_generator_binary_compare_false_cmov(compare->text, &false_cmov) ||
+      !code_generator_binary_compare_true_cmov_u(compare->text, compare->is_unsigned, &true_cmov) ||
+      !code_generator_binary_compare_false_cmov(compare->text, compare->is_unsigned, &false_cmov) ||
       compare->dest.kind != IR_OPERAND_TEMP || !compare->dest.name ||
       !branch || branch->op != IR_OP_BRANCH_ZERO || !branch->text ||
       !code_generator_binary_operand_uses_temp(&branch->lhs,

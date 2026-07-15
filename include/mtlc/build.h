@@ -104,6 +104,16 @@ MtlcValue mtlc_unary(MtlcFn *fn, const char *op, MtlcValue operand,
 MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
                    size_t arg_count, const MtlcType *return_type);
 
+/* Real address of a function symbol (defined or extern-declared): usable as
+ * a callback for OS/CRT APIs and with mtlc_call_indirect. */
+MtlcValue mtlc_function_address(MtlcFn *fn, const char *name);
+
+/* Call through a function-pointer value with `arg_count` arguments. Without a
+ * typed function-pointer symbol, arguments classify as integer/pointer. */
+MtlcValue mtlc_call_indirect(MtlcFn *fn, MtlcValue callee,
+                             const MtlcValue *args, size_t arg_count,
+                             const MtlcType *return_type);
+
 /* Convert `value` to `type` (integer width/sign changes, int<->float,
  * int<->pointer). */
 MtlcValue mtlc_cast(MtlcFn *fn, MtlcValue value, const MtlcType *type);

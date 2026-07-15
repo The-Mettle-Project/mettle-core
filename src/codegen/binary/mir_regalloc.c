@@ -1,4 +1,5 @@
 #include "codegen/binary/mir.h"
+#include "../../common.h" /* mettle_fnv1a_hash */
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -253,6 +254,144 @@ static int mir_find_label(const MirFunction *fn, const char *name) {
   return -1;
 }
 
+/* All of these carry the branch-target label in dst. A backward target makes
+ * the instruction a loop back-edge (e.g. a rotated loop's bottom-test CMPBR). */
+static int mir_inst_is_branch(const MirInst *in) {
+  return in->op == MIR_JMP || in->op == MIR_JCC || in->op == MIR_CMPBR ||
+         in->op == MIR_FCMPBR;
+}
+
+typedef struct {
+  int l; /* label (loop header) instruction index */
+  int b; /* backward-branch instruction index; l < b */
+} MirBackEdge;
+
+/* Every loop back-edge of the function, in instruction order. Resolves labels
+ * through a name table built in one pass, instead of a mir_find_label scan per
+ * branch. Returns 1 on success (with *edges_out possibly NULL when there are
+ * no back-edges) and 0 on allocation failure, which the caller must handle by
+ * falling back to per-pass edge derivation — skipping extension entirely
+ * would let loop-carried vregs share registers with loop-body temps. */
+static int mir_collect_back_edges(const MirFunction *fn,
+                                  MirBackEdge **edges_out, size_t *count_out) {
+  size_t label_count = 0;
+  size_t branch_count = 0;
+  *edges_out = NULL;
+  *count_out = 0;
+
+  for (size_t i = 0; i < fn->insn_count; i++) {
+    const MirInst *in = &fn->insns[i];
+    if (in->op == MIR_LABEL && in->dst.kind == MIR_OPK_LABEL && in->dst.sym) {
+      label_count++;
+    } else if (mir_inst_is_branch(in) && in->dst.kind == MIR_OPK_LABEL) {
+      branch_count++;
+    }
+  }
+  if (branch_count == 0) {
+    return 1; /* nothing to extend */
+  }
+
+  /* label name -> index, open addressing, sized for load factor <= 0.5 */
+  size_t slot_count = 16;
+  while (slot_count < label_count * 2) {
+    slot_count *= 2;
+  }
+  size_t *slots = calloc(slot_count, sizeof(*slots)); /* insn index + 1 */
+  MirBackEdge *edges = malloc(branch_count * sizeof(*edges));
+  if (!slots || !edges) {
+    free(slots);
+    free(edges);
+    return 0;
+  }
+
+  size_t mask = slot_count - 1;
+  for (size_t i = 0; i < fn->insn_count; i++) {
+    const MirInst *in = &fn->insns[i];
+    if (in->op != MIR_LABEL || in->dst.kind != MIR_OPK_LABEL || !in->dst.sym) {
+      continue;
+    }
+    size_t h = mettle_fnv1a_hash(in->dst.sym) & mask;
+    while (slots[h]) {
+      /* mir_find_label returns the FIRST label with a name; keep that. */
+      if (strcmp(fn->insns[slots[h] - 1].dst.sym, in->dst.sym) == 0) {
+        h = SIZE_MAX;
+        break;
+      }
+      h = (h + 1) & mask;
+    }
+    if (h != SIZE_MAX) {
+      slots[h] = i + 1;
+    }
+  }
+
+  size_t n = 0;
+  for (size_t i = 0; i < fn->insn_count; i++) {
+    const MirInst *in = &fn->insns[i];
+    if (!mir_inst_is_branch(in) || in->dst.kind != MIR_OPK_LABEL ||
+        !in->dst.sym) {
+      continue;
+    }
+    int l = -1;
+    size_t h = mettle_fnv1a_hash(in->dst.sym) & mask;
+    while (slots[h]) {
+      if (strcmp(fn->insns[slots[h] - 1].dst.sym, in->dst.sym) == 0) {
+        l = (int)(slots[h] - 1);
+        break;
+      }
+      h = (h + 1) & mask;
+    }
+    if (l < 0 || l >= (int)i) {
+      continue; /* forward branch or unknown label: no loop back-edge */
+    }
+    edges[n].l = l;
+    edges[n].b = (int)i;
+    n++;
+  }
+
+  free(slots);
+  if (n == 0) {
+    free(edges);
+    return 1;
+  }
+  *edges_out = edges;
+  *count_out = n;
+  return 1;
+}
+
+/* One back-edge's worth of interval extension: any vreg whose interval crosses
+ * the [l,b] boundary must stay live across the whole loop. */
+static void mir_extend_across_edge(MirFunction *fn, int l, int b,
+                                   int *changed) {
+  for (size_t v = 0; v < fn->vreg_count; v++) {
+    MirVreg *vr = &fn->vregs[v];
+    if (vr->live_start == MIR_LIVE_NONE) {
+      continue;
+    }
+    /* interval overlaps [l,b]? */
+    if (vr->live_end < l || vr->live_start > b) {
+      continue;
+    }
+    /* crosses a boundary (defined before l, or used after b)? An entry-live
+     * vreg (param / hidden out-pointer) is defined by the prologue BEFORE
+     * instruction 0, so when the loop header is at index 0 (tail-recursion
+     * loops) it crosses even though live_start == l. */
+    int crosses = (vr->live_start < l) || (vr->live_end > b) ||
+                  (vr->entry_live && l == 0);
+    if (!crosses) {
+      continue;
+    }
+    vr->loop_carried = 1; /* reused across this loop's back-edge */
+    if (vr->live_start > l) {
+      vr->live_start = l;
+      *changed = 1;
+    }
+    if (vr->live_end < b) {
+      vr->live_end = b;
+      *changed = 1;
+    }
+  }
+}
+
 static void mir_compute_liveness(MirFunction *fn) {
   for (size_t i = 0; i < fn->vreg_count; i++) {
     fn->vregs[i].live_start = MIR_LIVE_NONE;
@@ -292,55 +431,41 @@ static void mir_compute_liveness(MirFunction *fn) {
 
   /* Conservatively extend intervals across backward branches (loops) to a
    * fixpoint. For each branch at B targeting a label at L < B, any vreg whose
-   * interval crosses the [L,B] boundary must stay live across the whole loop. */
+   * interval crosses the [L,B] boundary must stay live across the whole loop.
+   *
+   * The back-edge set never changes during the fixpoint — only the intervals
+   * do — so it is collected once up front. Re-deriving it every pass (with
+   * mir_find_label's linear scan per branch) made the fixpoint
+   * O(passes x insns x (labels + vregs)), which dominated regalloc on large
+   * straight-from-the-frontend functions. */
+  MirBackEdge *edges = NULL;
+  size_t edge_count = 0;
   int changed = 1;
+  if (mir_collect_back_edges(fn, &edges, &edge_count)) {
+    while (changed) {
+      changed = 0;
+      for (size_t e = 0; e < edge_count; e++) {
+        mir_extend_across_edge(fn, edges[e].l, edges[e].b, &changed);
+      }
+    }
+    free(edges);
+    return;
+  }
+
+  /* Fallback: edge collection failed to allocate; derive edges per pass. */
   while (changed) {
     changed = 0;
     for (size_t i = 0; i < fn->insn_count; i++) {
       const MirInst *in = &fn->insns[i];
-      const MirOperand *target = NULL;
-      if (in->op == MIR_JMP || in->op == MIR_JCC || in->op == MIR_CMPBR ||
-          in->op == MIR_FCMPBR) {
-        /* All carry the branch-target label in dst. A backward target makes this
-         * a loop back-edge (e.g. a rotated loop's bottom-test CMPBR). */
-        target = &in->dst;
-      }
-      if (!target || target->kind != MIR_OPK_LABEL) {
+      if (!mir_inst_is_branch(in) || in->dst.kind != MIR_OPK_LABEL) {
         continue;
       }
-      int l = mir_find_label(fn, target->sym);
+      int l = mir_find_label(fn, in->dst.sym);
       int b = (int)i;
       if (l < 0 || l >= b) {
         continue; /* forward branch: no loop back-edge */
       }
-      for (size_t v = 0; v < fn->vreg_count; v++) {
-        MirVreg *vr = &fn->vregs[v];
-        if (vr->live_start == MIR_LIVE_NONE) {
-          continue;
-        }
-        /* interval overlaps [l,b]? */
-        if (vr->live_end < l || vr->live_start > b) {
-          continue;
-        }
-        /* crosses a boundary (defined before l, or used after b)? An
-         * entry-live vreg (param / hidden out-pointer) is defined by the
-         * prologue BEFORE instruction 0, so when the loop header is at index
-         * 0 (tail-recursion loops) it crosses even though live_start == l. */
-        int crosses = (vr->live_start < l) || (vr->live_end > b) ||
-                      (vr->entry_live && l == 0);
-        if (!crosses) {
-          continue;
-        }
-        vr->loop_carried = 1; /* reused across this loop's back-edge */
-        if (vr->live_start > l) {
-          vr->live_start = l;
-          changed = 1;
-        }
-        if (vr->live_end < b) {
-          vr->live_end = b;
-          changed = 1;
-        }
-      }
+      mir_extend_across_edge(fn, l, b, &changed);
     }
   }
 }
@@ -464,10 +589,164 @@ static void mir_compute_coalesce_hints(MirFunction *fn) {
  * result, which the encoder places correctly, so they are not clobbers. Calls
  * are handled separately by crosses_call (a value spanning a call is barred from
  * all volatiles, including these three). */
+/* Positions of every clobber event in one function, sorted ascending, so a
+ * clobbered-in-range query is two binary searches instead of a scan of the
+ * interval. mir_color_reg_mask asks this question for every register of the
+ * pool for every vreg; on a function large enough (a frontend can emit a
+ * module initializer with 10^6 instructions) the interval scans made regalloc
+ * quadratic. Cached per function, keyed the way g_binary_ir_function_index
+ * keys its cache; rebuilt in one pass whenever the function changes. */
+typedef struct {
+  int *pos;
+  size_t count;
+  size_t cap;
+} MirClobberList;
+
+typedef struct {
+  const MirFunction *fn;
+  const MirInst *insns;
+  size_t insn_count;
+  int valid; /* 0 after an allocation failure: callers use the linear scan */
+  MirClobberList explicit_writes[16]; /* per physical GP register */
+  MirClobberList rax_implicit;
+  MirClobberList rcx_implicit;
+  MirClobberList rdx_implicit;
+} MirClobberIndex;
+
+static MirClobberIndex g_mir_clobber_index = {0};
+
+static void mir_clobber_list_free(MirClobberList *l) {
+  free(l->pos);
+  l->pos = NULL;
+  l->count = 0;
+  l->cap = 0;
+}
+
+static int mir_clobber_list_push(MirClobberList *l, int k) {
+  if (l->count == l->cap) {
+    size_t cap = l->cap ? l->cap * 2 : 16;
+    int *pos = realloc(l->pos, cap * sizeof(*pos));
+    if (!pos) {
+      return 0;
+    }
+    l->pos = pos;
+    l->cap = cap;
+  }
+  l->pos[l->count++] = k; /* k only grows across the build pass: sorted */
+  return 1;
+}
+
+/* Any position strictly inside (s, e)? */
+static int mir_clobber_list_hit(const MirClobberList *l, int s, int e) {
+  size_t lo = 0;
+  size_t hi = l->count;
+  while (lo < hi) { /* first position > s */
+    size_t mid = lo + (hi - lo) / 2;
+    if (l->pos[mid] <= s) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo < l->count && l->pos[lo] < e;
+}
+
+static void mir_clobber_index_reset(void) {
+  for (size_t r = 0; r < 16; r++) {
+    mir_clobber_list_free(&g_mir_clobber_index.explicit_writes[r]);
+  }
+  mir_clobber_list_free(&g_mir_clobber_index.rax_implicit);
+  mir_clobber_list_free(&g_mir_clobber_index.rcx_implicit);
+  mir_clobber_list_free(&g_mir_clobber_index.rdx_implicit);
+  g_mir_clobber_index.fn = NULL;
+  g_mir_clobber_index.insns = NULL;
+  g_mir_clobber_index.insn_count = 0;
+  g_mir_clobber_index.valid = 0;
+}
+
+static int mir_clobber_index_ensure(const MirFunction *fn) {
+  MirClobberIndex *ix = &g_mir_clobber_index;
+  if (ix->fn == fn && ix->insns == fn->insns &&
+      ix->insn_count == fn->insn_count) {
+    return ix->valid;
+  }
+
+  mir_clobber_index_reset();
+  ix->fn = fn;
+  ix->insns = fn->insns;
+  ix->insn_count = fn->insn_count;
+  ix->valid = 1;
+
+  for (size_t k = 0; k < fn->insn_count; k++) {
+    const MirInst *in = &fn->insns[k];
+    int ok = 1;
+    if (in->dst.kind == MIR_OPK_PHYS && in->dst.rclass == MIR_RC_GP &&
+        in->dst.phys >= 0 && in->dst.phys < 16) {
+      ok = mir_clobber_list_push(&ix->explicit_writes[in->dst.phys], (int)k);
+    }
+    if (ok) {
+      switch (in->op) {
+      case MIR_IDIV:
+      case MIR_DIV:
+      case MIR_MULHI:
+        ok = mir_clobber_list_push(&ix->rax_implicit, (int)k) &&
+             mir_clobber_list_push(&ix->rdx_implicit, (int)k);
+        break;
+      case MIR_CQO:
+      case MIR_XOR_RDX:
+        ok = mir_clobber_list_push(&ix->rdx_implicit, (int)k);
+        break;
+      case MIR_SETCC:
+      case MIR_FSETCC:
+        ok = mir_clobber_list_push(&ix->rax_implicit, (int)k);
+        break;
+      case MIR_SHL:
+      case MIR_SHR:
+      case MIR_SAR:
+        if (in->b.kind != MIR_OPK_IMM) {
+          ok = mir_clobber_list_push(&ix->rcx_implicit, (int)k);
+        }
+        break;
+      default:
+        break;
+      }
+    }
+    if (!ok) {
+      mir_clobber_index_reset();
+      ix->fn = fn;
+      ix->insns = fn->insns;
+      ix->insn_count = fn->insn_count;
+      ix->valid = 0; /* remember the failure; do not rebuild per query */
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
 static int mir_reg_clobbered_in_range(const MirFunction *fn,
                                       BinaryGpRegister reg, int s, int e) {
   int constrained = (reg == BINARY_GP_RAX || reg == BINARY_GP_RCX ||
                      reg == BINARY_GP_RDX);
+
+  if ((int)reg >= 0 && (int)reg < 16 && mir_clobber_index_ensure(fn)) {
+    const MirClobberIndex *ix = &g_mir_clobber_index;
+    if (mir_clobber_list_hit(&ix->explicit_writes[reg], s, e)) {
+      return 1;
+    }
+    if (!constrained) {
+      return 0;
+    }
+    if (reg == BINARY_GP_RAX) {
+      return mir_clobber_list_hit(&ix->rax_implicit, s, e);
+    }
+    if (reg == BINARY_GP_RCX) {
+      return mir_clobber_list_hit(&ix->rcx_implicit, s, e);
+    }
+    return mir_clobber_list_hit(&ix->rdx_implicit, s, e);
+  }
+
+  /* Fallback: index unavailable; scan the interval as before. */
   for (int k = s + 1; k < e; k++) {
     const MirInst *in = &fn->insns[k];
     /* An explicit write to this physical register (return value into RAX, ABI

@@ -442,6 +442,114 @@ int code_generator_emit_binary_global_variable(CodeGenerator *generator,
   return 1;
 }
 
+/* --- Written-global name set --------------------------------------------- *
+ *
+ * collect_global_constants needs to know, per candidate global, whether any
+ * instruction writes it (or takes its address). Asking
+ * code_generator_binary_global_is_written per global rescans every instruction
+ * of every function — O(globals x instructions) with a strcmp inside — which
+ * dominated codegen once a frontend with many string literals pushed module
+ * globals into the tens of thousands. Build the set of written names in one
+ * pass instead and answer each query from the table (the same cure
+ * BinaryIRFunctionIndex applies to function lookup; see internal.h). Names are
+ * borrowed from the IR, which outlives the set. */
+typedef struct {
+  const char **slots; /* open addressing; NULL = empty */
+  size_t slot_count;  /* power of two, 0 until first insert */
+  size_t count;
+} BinaryWrittenSet;
+
+static int binary_written_set_grow(BinaryWrittenSet *set) {
+  size_t new_count = set->slot_count ? set->slot_count * 2 : 1024;
+  const char **new_slots = calloc(new_count, sizeof(*new_slots));
+  if (!new_slots) {
+    return 0;
+  }
+  for (size_t i = 0; i < set->slot_count; i++) {
+    const char *name = set->slots[i];
+    if (!name) {
+      continue;
+    }
+    size_t h = mettle_fnv1a_hash(name) & (new_count - 1);
+    while (new_slots[h]) {
+      h = (h + 1) & (new_count - 1);
+    }
+    new_slots[h] = name;
+  }
+  free(set->slots);
+  set->slots = new_slots;
+  set->slot_count = new_count;
+  return 1;
+}
+
+static int binary_written_set_add(BinaryWrittenSet *set, const char *name) {
+  if (!name) {
+    return 1;
+  }
+  /* grow at 50% load so probe chains stay short */
+  if (set->slot_count == 0 || set->count * 2 >= set->slot_count) {
+    if (!binary_written_set_grow(set)) {
+      return 0;
+    }
+  }
+  size_t mask = set->slot_count - 1;
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (set->slots[h]) {
+    if (strcmp(set->slots[h], name) == 0) {
+      return 1;
+    }
+    h = (h + 1) & mask;
+  }
+  set->slots[h] = name;
+  set->count++;
+  return 1;
+}
+
+static int binary_written_set_contains(const BinaryWrittenSet *set,
+                                       const char *name) {
+  if (!name || set->slot_count == 0) {
+    return 0;
+  }
+  size_t mask = set->slot_count - 1;
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (set->slots[h]) {
+    if (strcmp(set->slots[h], name) == 0) {
+      return 1;
+    }
+    h = (h + 1) & mask;
+  }
+  return 0;
+}
+
+/* Collect every symbol name the program writes or takes the address of —
+ * the same three cases code_generator_binary_global_is_written tests. */
+static int binary_written_set_build(BinaryWrittenSet *set,
+                                    const IRProgram *ir_program) {
+  for (size_t fn_i = 0; fn_i < ir_program->function_count; fn_i++) {
+    const IRFunction *function = ir_program->functions[fn_i];
+    if (!function) {
+      continue;
+    }
+    for (size_t insn_i = 0; insn_i < function->instruction_count; insn_i++) {
+      const IRInstruction *instruction = &function->instructions[insn_i];
+      if (instruction->dest.kind == IR_OPERAND_SYMBOL &&
+          instruction->dest.name) {
+        if (!binary_written_set_add(set, instruction->dest.name)) {
+          return 0;
+        }
+      }
+      if (instruction->op == IR_OP_ADDRESS_OF &&
+          instruction->lhs.kind == IR_OPERAND_SYMBOL &&
+          instruction->lhs.name) {
+        if (!binary_written_set_add(set, instruction->lhs.name)) {
+          return 0;
+        }
+      }
+    }
+  }
+  return 1;
+}
+
 int code_generator_binary_global_is_written(IRProgram *ir_program,
                                                    const char *name) {
   if (!ir_program || !name) {
@@ -481,7 +589,16 @@ int code_generator_binary_global_is_written(IRProgram *ir_program,
 }
 
 int code_generator_binary_collect_global_constants(CodeGenerator *generator) {
+  BinaryWrittenSet written = {0};
+
   if (!generator || !generator->ir_program) {
+    return 0;
+  }
+
+  if (!binary_written_set_build(&written, generator->ir_program)) {
+    free(written.slots);
+    code_generator_set_error(generator,
+                             "Out of memory while scanning written globals");
     return 0;
   }
 
@@ -506,17 +623,20 @@ int code_generator_binary_collect_global_constants(CodeGenerator *generator) {
       int_value = (long long)float_value;
     }
 
-    if (!binary_global_const_table_add(
-            sym->name, int_value, float_value, sym->init_is_float,
-            !code_generator_binary_global_is_written(generator->ir_program,
-                                                     sym->name))) {
+    /* Same predicate code_generator_binary_global_is_written applies, but
+     * answered from the precomputed set. A NULL name counts as written. */
+    int is_const = sym->name && !binary_written_set_contains(&written, sym->name);
+    if (!binary_global_const_table_add(sym->name, int_value, float_value,
+                                       sym->init_is_float, is_const)) {
       code_generator_set_error(
           generator, "Out of memory while tracking constant global '%s'",
           sym->name);
+      free(written.slots);
       return 0;
     }
   }
 
+  free(written.slots);
   return 1;
 }
 

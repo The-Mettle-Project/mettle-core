@@ -2487,7 +2487,7 @@ static int mir_build_const_pool(MirFunction *fn, CodeGenerator *g,
     if (in->op == IR_OP_BINARY && !in->is_float && in->text &&
         (in->text[0] == '/' || in->text[0] == '%') && in->text[1] == '\0' &&
         in->rhs.kind == IR_OPERAND_INT) {
-      int uns = mir_operand_is_unsigned(g, ctx, &in->lhs);
+      int uns = in->is_unsigned || mir_operand_is_unsigned(g, ctx, &in->lhs);
       int64_t M;
       if (mir_divmod_magic(in->rhs.int_value, uns, &M) && !mir_iconst_add(fn, M)) {
         ok = 0;
@@ -2604,7 +2604,7 @@ static int mir_lower_compare_branch(MirFunction *fn, CodeGenerator *g,
     return mir_emit1(fn, MIR_FCMPBR, mir_op_label(br->text), a, b, w, 0, cc);
   }
   MirOperand a = mir_value_operand(fn, g, ctx, map, &cmp->lhs);
-  int uns = mir_operand_is_unsigned(g, ctx, &cmp->lhs) ||
+  int uns = cmp->is_unsigned || mir_operand_is_unsigned(g, ctx, &cmp->lhs) ||
             mir_operand_is_unsigned(g, ctx, &cmp->rhs);
   /* Fold a constant right-hand bound into the compare as an imm32 so the loop
    * does not rematerialize it into a register every iteration. The producer is
@@ -2776,7 +2776,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
       return mir_emit1(fn, MIR_FSETCC, dst, fa, fbop, w, 0, cc);
     }
     if (mir_is_comparison(in->text)) {
-      int uns = mir_operand_is_unsigned(g, ctx, &in->lhs) ||
+      int uns = in->is_unsigned || mir_operand_is_unsigned(g, ctx, &in->lhs) ||
                 mir_operand_is_unsigned(g, ctx, &in->rhs);
       unsigned char cc = 0;
       mir_setcc_opcode(in->text, uns, &cc);
@@ -2786,7 +2786,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
     if (strcmp(in->text, "/") == 0 || strcmp(in->text, "%") == 0) {
       /* idiv/div: signedness is the dividend's (lhs) type; cc carries the
        * quotient-vs-remainder choice (1 == remainder, the `%` case). */
-      int uns = mir_operand_is_unsigned(g, ctx, &in->lhs);
+      int uns = in->is_unsigned || mir_operand_is_unsigned(g, ctx, &in->lhs);
       unsigned char mod = (in->text[0] == '%') ? 1 : 0;
 
       /* Constant-divisor strength reduction: replace the long-latency divide
@@ -2878,7 +2878,7 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
     int uns = 0;
     if (op == MIR_SHR) {
       /* arithmetic vs logical right shift depends on the LHS signedness. */
-      if (!mir_operand_is_unsigned(g, ctx, &in->lhs)) {
+      if (!in->is_unsigned && !mir_operand_is_unsigned(g, ctx, &in->lhs)) {
         op = MIR_SAR;
       } else {
         uns = 1;
