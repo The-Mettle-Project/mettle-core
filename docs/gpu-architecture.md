@@ -56,7 +56,7 @@ capability rejection, and PTX, SPIR-V, x86-64, and AArch64 products.
 | Capability | Status | Evidence / missing work |
 |---|---|---|
 | Explicit kernel identity | working foundation | `kernel` survives AST -> IR; public builders can mark kernels; ordinary functions are not exported as entries |
-| PTX GB10 profile | assembler-validated | default PTX 8.8 / `sm_121a`; `ptxas -arch=sm_121a` CI/developer gate when supported; raw `sm_121` cannot silently opt into architecture-specific tensor features |
+| PTX GB10 profile | assembler-validated | PTX 8.8 / `sm_121a`; the CLI auto-detects the local GPU when no `--gpu-arch` is given and falls back to this profile with no visible device; `ptxas -arch=sm_121a` CI/developer gate when supported; raw `sm_121` cannot silently opt into architecture-specific tensor features |
 | Portable PTX profile | assembler-validated | PTX 6.4 / `compute_75`; raw `sm_NN` and `compute_NN` configuration is exposed by CLI and context |
 | SPIR-V kernel modules | structurally validated | OpenCL 2.0 module generation; `spirv-val` when installed |
 | Kernel scalar/pointer ABI | compile-time checked | aggregate/closure/string/nested-pointer parameters rejected; narrow scalar PTX parameters use natural widths |

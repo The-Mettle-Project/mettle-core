@@ -852,7 +852,11 @@ yet constitute a hardware-validated scheduler or graph implementation.
 ## Building
 
 ```bash
-# 1. compile optimized kernels for DGX Spark GB10 (the default profile)
+# 1. compile optimized kernels for the local GPU (auto-detected via the
+#    driver; falls back to the DGX Spark GB10 profile when no GPU is visible)
+mettle -O --emit-ptx kernels.mettle -o kernels.ptx
+
+# Or pin a profile explicitly, for example DGX Spark GB10:
 mettle -O --emit-ptx --gpu-arch=gb10 kernels.mettle -o kernels.ptx
 
 # A forward-compatible development baseline is also available:
@@ -959,9 +963,14 @@ which `spirv-val --target-env opencl2.0` confirms.
 
 ## Notes and limits
 
-- The default PTX profile is `.version 8.8` / `.target sm_121a` for GB10.
-  `--gpu-arch=portable` emits PTX 6.4 / `compute_75`; raw `sm_NN` and
-  `compute_NN` targets plus `--ptx-version=M.m` are available for integration.
+- Without `--gpu-arch`, the CLI targets the local GPU: it queries the driver
+  (`nvidia-smi`) for the device's compute capability and selects the matching
+  `sm_NN` target, using the architecture-specific `a` variant from `sm_90`
+  onward so the full tensor instruction surface is available. When no GPU or
+  driver is visible (headless or cross-compiling hosts), the default is
+  `.version 8.8` / `.target sm_121a` for GB10. `--gpu-arch` always wins:
+  `portable` emits PTX 6.4 / `compute_75`; raw `sm_NN` and `compute_NN`
+  targets plus `--ptx-version=M.m` are available for integration.
 - `dispatch` is a checked enqueue: provider failure terminates the process.
   Status-returning `gpu_launch_3d` remains available when recovery is required.
   Provider-neutral launch attributes beyond geometry, dynamic shared bytes, and

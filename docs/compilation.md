@@ -35,9 +35,11 @@ Available topics: `build`, `runtime` (aliases `heap`, `gc`), `interop`, `stdlib`
 <!-- Target-qualified device/native modes. -->
 GPU/native target qualification: `--emit-ptx` and `--emit-spirv` emit only
 functions declared with `kernel`; ordinary `fn` declarations are not entry
-points. PTX defaults to PTX 8.8 / architecture-specific `sm_121a` for GB10. Use
+points. Without `--gpu-arch`, PTX targets the local GPU (compute capability
+queried through `nvidia-smi`, architecture-specific `a` variant from `sm_90`
+onward); with no visible GPU it falls back to PTX 8.8 / `sm_121a` for GB10. Use
 `--gpu-arch=gb10|portable|sm_NN|compute_NN` and optionally
-`--ptx-version=M.m` to select backend policy.
+`--ptx-version=M.m` to select backend policy explicitly.
 `--gpu-tensor-tuple-budget=N` selects the PTX-only resident-fragment ceiling
 (`0` uses the architecture default), allowing an external measurement harness
 to compare resident and exact-replay variants without changing source or shared

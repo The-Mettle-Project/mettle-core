@@ -2358,6 +2358,47 @@ static int add_link_argument(CompilerOptions *options, const char *argument) {
   return 1;
 }
 
+/* Resolve the default PTX target from the local GPU when the user gave no
+ * --gpu-arch. Queries the driver for the device's compute capability and maps
+ * it to the matching sm_ target, taking the architecture-specific `a` variant
+ * where one exists (sm_90 onward) so the full instruction surface (block-scaled
+ * MMA and friends) is available on the machine that will run the output.
+ * Returns 1 and fills `out` on success; returns 0 when no NVIDIA driver is
+ * visible or its answer is unparseable, in which case the caller keeps the
+ * project default (GB10 sm_121a), preserving cross-compile behavior on hosts
+ * with no GPU. */
+static int detect_host_gpu_ptx_target(char *out, size_t out_size) {
+#ifdef _WIN32
+  FILE *pipe = _popen(
+      "nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>nul", "r");
+#else
+  FILE *pipe = popen(
+      "nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null",
+      "r");
+#endif
+  if (!pipe) {
+    return 0;
+  }
+  char line[64] = {0};
+  const char *read = fgets(line, sizeof(line), pipe);
+#ifdef _WIN32
+  int status = _pclose(pipe);
+#else
+  int status = pclose(pipe);
+#endif
+  int major = 0, minor = 0;
+  char trailing = '\0';
+  if (!read || status != 0 ||
+      sscanf(line, "%d.%d%c", &major, &minor, &trailing) < 2 || major < 1 ||
+      major > 99 || minor < 0 || minor > 9 ||
+      (trailing != '\0' && trailing != '\n' && trailing != '\r' &&
+       trailing != ' ')) {
+    return 0;
+  }
+  snprintf(out, out_size, "sm_%d%d%s", major, minor, major >= 9 ? "a" : "");
+  return 1;
+}
+
 int main(int argc, char *argv[]) {
   CompilerOptions options = {0};
   mettle_compiler_crash_install(argc, argv);
@@ -2369,6 +2410,8 @@ int main(int argc, char *argv[]) {
   int linker_mode_explicit = 0;
   int output_filename_explicit = 0;
   int ptx_version_explicit = 0;
+  int gpu_arch_explicit = 0;
+  char detected_ptx_target[16];
   options.emit_object = 1;
   options.output_filename = default_object_output_filename();
   options.debug_format = "dwarf";
@@ -2612,6 +2655,7 @@ int main(int argc, char *argv[]) {
       options.emit_ptx = 1;
     } else if (strncmp(argv[i], "--gpu-arch=", 11) == 0) {
       const char *arch = argv[i] + 11;
+      gpu_arch_explicit = 1;
       if (strcmp(arch, "gb10") == 0) {
         /* GB10's compatible sm_121 profile excludes its architecture-specific
          * FP4/block-scaled MMA forms. The named performance target must retain
@@ -2739,6 +2783,15 @@ int main(int argc, char *argv[]) {
     free((void *)options.import_directories);
     free((void *)options.link_arguments);
     return 1;
+  }
+
+  /* No --gpu-arch given: target the GPU that is actually in this machine when
+   * one is visible. Detection failure (no driver, headless build host) keeps
+   * the GB10 default so cross-compiles for DGX Spark are unchanged. */
+  if (options.emit_ptx && !gpu_arch_explicit &&
+      detect_host_gpu_ptx_target(detected_ptx_target,
+                                 sizeof(detected_ptx_target))) {
+    options.ptx_target = detected_ptx_target;
   }
 
   if (options.tracy && !build_executable) {
@@ -3975,10 +4028,11 @@ void print_usage(const char *program_name) {
   printf("  --build             Compile and link to an executable (COFF/PE on "
          "Windows, ELF on Linux)\n");
   printf("  --emit-obj          Emit a native object directly (default)\n");
-  printf("  --emit-ptx          Emit declared kernels as NVIDIA PTX (default GPU\n"
-         "                      profile: DGX Spark GB10, PTX 8.8 / sm_121a)\n");
+  printf("  --emit-ptx          Emit declared kernels as NVIDIA PTX (targets the\n"
+         "                      local GPU when one is visible via nvidia-smi;\n"
+         "                      otherwise DGX Spark GB10, PTX 8.8 / sm_121a)\n");
   printf("  --gpu-arch=A        PTX profile: gb10, portable (compute_75), sm_NN,\n"
-         "                      or compute_NN\n");
+         "                      or compute_NN (disables local GPU detection)\n");
   printf("  --ptx-version=M.m   Override the emitted PTX ISA version\n");
   printf("  --gpu-tensor-tuple-budget=N\n"
          "                      PTX resident-fragment ceiling (0=architecture\n"
