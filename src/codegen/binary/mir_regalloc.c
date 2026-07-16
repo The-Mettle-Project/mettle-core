@@ -1407,6 +1407,18 @@ int mir_regalloc(MirFunction *fn) {
     return 1;
   }
 
+  /* Invalidate the clobber-event cache unconditionally: it is keyed on the
+   * MirFunction and insns POINTERS plus the instruction count, but MirFunction
+   * is a stack local reused at the same address for every function, and a
+   * freed insns array is routinely handed back by the allocator for the next
+   * function. Two same-length functions could then false-hit the cache and
+   * colour against the PREVIOUS function's clobber positions - heap-layout
+   * dependent register choices (the opt_ptr_induction determinism flake) and,
+   * in the worst case, a value placed in a register a homing move clobbers.
+   * Resetting here keeps the full intra-function benefit: the index is built
+   * once on the first query below and stays valid for the whole allocation. */
+  mir_clobber_index_reset();
+
   /* Strip dead pure defs before allocation so they neither consume registers nor
    * emit instructions. */
   mir_dce(fn);
