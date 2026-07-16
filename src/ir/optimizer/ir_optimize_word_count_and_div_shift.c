@@ -352,6 +352,9 @@ static int ir_try_vectorize_word_count_at(IRFunction *function,
   if (jump_index == (size_t)-1) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
 
   size_t increment_index = jump_index;
   while (increment_index > branch_index + 1) {

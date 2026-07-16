@@ -296,6 +296,9 @@ static int ir_float_reduction_frame(IRFunction *function, size_t header_index,
   if (jump_index == (size_t)-1) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
@@ -1152,6 +1155,9 @@ static int ir_try_vectorize_i2f_reduce_at(IRFunction *function,
   }
   if (jump_index == (size_t)-1) {
     return 1;
+  }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
   }
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;

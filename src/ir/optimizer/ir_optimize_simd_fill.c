@@ -243,6 +243,9 @@ static int ir_fill_frame(IRFunction *function, size_t header_index,
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
   *compare_out = compare_index;
   *branch_out = branch_index;
   *jump_out = jump_index;

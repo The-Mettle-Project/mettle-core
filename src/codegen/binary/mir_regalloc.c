@@ -128,14 +128,19 @@ static int mir_reg_arg_index(BinaryGpRegister reg) {
 
 /* Whether `reg` may join the non-cross-call allocatable pool.
  * An arg register is poolable only when it carries NO incoming parameter (its
- * arg index >= param_count, so homing never reads it) AND, if it is an arg
- * register at all, its live range must not cross a call (handled separately by
- * MIR_GP_CROSSCALL_POOL). Non-arg callee-saved registers (RSI/RDI on Win64) are
- * always poolable. This keeps parameter homing a plain sequential copy — no
- * arg register is ever both a homing source and an allocation target. */
+ * arg index >= param_count, so prologue homing never reads it) AND the function
+ * makes no real call. In a function WITH calls, an outgoing-argument homing
+ * sequence (`mov rcx,a0; mov rdx,a1; mov r8,a2; mov r9,a3`) writes the arg
+ * registers before the call with no per-write clobber event the allocator
+ * checks argument SOURCES against: a value allocated into R8/R9 that is still
+ * needed as a later argument source (or by any use between the homing writes
+ * and its interval end) is silently destroyed — the parallel-move hazard the
+ * pool exclusion exists to prevent (see MIR_GP_POOL and has_xmm_arg_call).
+ * This bit ignoring `is_leaf` let huge high-pressure functions color values
+ * into R8/R9 and miscompile (ornith process_token: NaN under --release).
+ * Non-arg callee-saved registers (RSI/RDI on Win64) are always poolable. */
 static int mir_reg_poolable(BinaryGpRegister reg, size_t param_count,
                             int is_leaf) {
-  (void)is_leaf;
   int ai = mir_reg_arg_index(reg);
   if (ai < 0) {
     return 1; /* not an arg register: safe on both ABIs */
@@ -143,7 +148,7 @@ static int mir_reg_poolable(BinaryGpRegister reg, size_t param_count,
   if ((size_t)ai < param_count) {
     return 0; /* holds a live incoming parameter -> homing source */
   }
-  return 1; /* dead arg reg: call clobbers are handled by liveness/masks */
+  return is_leaf ? 1 : 0; /* dead arg reg: safe only with no outgoing calls */
 }
 
 /* Build the non-cross-call GP pool: the universally-safe base, then any
@@ -314,6 +319,10 @@ static int mir_collect_back_edges(const MirFunction *fn,
     while (slots[h]) {
       /* mir_find_label returns the FIRST label with a name; keep that. */
       if (strcmp(fn->insns[slots[h] - 1].dst.sym, in->dst.sym) == 0) {
+        if (getenv("METTLE_MIR_DUPLABEL")) {
+          fprintf(stderr, "MIR-DUPLABEL %s at %zu (first at %zu)\n",
+                  in->dst.sym, i, slots[h] - 1);
+        }
         h = SIZE_MAX;
         break;
       }

@@ -297,6 +297,13 @@ static int ir_try_fold_popcount_byte_loop_at(IRFunction *function,
       done_index <= jump_index) {
     return 1;
   }
+  /* The rebuild below splices [0..header) + unrolled steps + [done..end),
+   * DROPPING everything in (jump..done). That is only the empty fallthrough
+   * gap when the exit label directly follows the loop; a threaded exit label
+   * further away would take live code (e.g. an else branch) with it. */
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, done_label)) {
+    return 1;
+  }
 
   char prefix[32];
   snprintf(prefix, sizeof(prefix), "pc%zu", header_index);

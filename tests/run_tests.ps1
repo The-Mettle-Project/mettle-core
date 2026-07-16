@@ -2174,6 +2174,28 @@ catch {
   Write-CaseResult -Name "generics_runtime" -Passed $false -Reason $_.Exception.Message
 }
 
+# Fused-loop threaded-exit regression: a vectorizable loop in an if/else THEN
+# branch whose exit was jump-threaded to the join must not fall through into
+# the ELSE branch after fusion (ir_fused_loop_exit_is_adjacent). Self-checking
+# at --release: 55 = fused and reference results match, 1 = divergence.
+$total++
+try {
+  $exePath = Join-Path $tmpDir "opt_fused_loop_threaded_exit.exe"
+  $buildOut = & $CompilerPath --build --release "tests\test_opt_fused_loop_threaded_exit.mettle" -o $exePath 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "threaded-exit regression build failed: $buildOut"
+  }
+  & $exePath 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 55) {
+    throw "threaded-exit regression exited with $LASTEXITCODE (expected 55): fused loop fell through its deleted exit edge"
+  }
+  Write-CaseResult -Name "opt_fused_loop_threaded_exit" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "opt_fused_loop_threaded_exit" -Passed $false -Reason $_.Exception.Message
+}
+
 # Global float variables: compile with --build and verify they read back their
 # initializer (and survive mutation) instead of reading 0 from an uninitialized
 # XMM lane. Returns 25+125+35+30 = 215.

@@ -51,7 +51,10 @@ int ir_find_while_loop_bounds(IRFunction *function, size_t header_index,
     }
   }
 
-  return out->jump_index != (size_t)-1;
+  return out->jump_index != (size_t)-1 &&
+         /* threaded exit: the nop-install would delete the exit edge */
+         ir_fused_loop_exit_is_adjacent(function, out->jump_index,
+                                        out->exit_label);
 }
 
 int ir_symbol_contains(const char *symbol, const char *needle) {

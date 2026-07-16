@@ -96,6 +96,22 @@ int ir_label_is_while_header(const char *label) {
   return strstr(label, "_lbl_ir_for_cond_") != NULL;
 }
 
+int ir_fused_loop_exit_is_adjacent(const IRFunction *function,
+                                   size_t jump_index, const char *exit_label) {
+  if (!function || !exit_label) {
+    return 0;
+  }
+  for (size_t i = jump_index + 1; i < function->instruction_count; i++) {
+    const IRInstruction *ins = &function->instructions[i];
+    if (ins->op == IR_OP_NOP) {
+      continue;
+    }
+    return ins->op == IR_OP_LABEL && ins->text &&
+           strcmp(ins->text, exit_label) == 0;
+  }
+  return 0;
+}
+
 int ir_loop_body_has_nested_while(IRFunction *function, size_t start,
                                          size_t end) {
   if (!function) {
@@ -187,6 +203,9 @@ static int ir_try_vectorize_sum_i32_at(IRFunction *function, size_t header_index
   }
   if (jump_index == (size_t)-1) {
     return 1;
+  }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
   }
 
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
@@ -517,6 +536,9 @@ static int ir_try_vectorize_sum_u8_at(IRFunction *function, size_t header_index,
   if (jump_index == (size_t)-1) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
 
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
@@ -742,6 +764,9 @@ static int ir_try_vectorize_byte_map_at(IRFunction *function,
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, exit_label)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
 
   increment_index = jump_index;
   while (increment_index > branch_index + 1) {
@@ -944,6 +969,9 @@ static int ir_try_vectorize_lcg_at(IRFunction *function, size_t header_index,
   if (jump_index == (size_t)-1 ||
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
+  }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
   }
 
   const char *state_sym = NULL, *sum_sym = NULL;

@@ -988,6 +988,10 @@ static int ir_try_vectorize_dot_i32_at(IRFunction *function, size_t header_index
     ir_operand_destroy(&len);
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    ir_operand_destroy(&len);
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
 
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     ir_operand_destroy(&len);
@@ -1158,6 +1162,10 @@ static int ir_try_vectorize_dot_i8_at(IRFunction *function, size_t header_index,
   if (jump_index == (size_t)-1) {
     ir_operand_destroy(&len);
     return 1;
+  }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    ir_operand_destroy(&len);
+    return 1; /* threaded exit: fusing would delete the exit edge */
   }
   if (ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     ir_operand_destroy(&len);
@@ -1734,6 +1742,9 @@ static int ir_try_vectorize_slp_mac_i32_at(IRFunction *function,
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
   if (!ir_slp_loop_frame_is_replayable(function, header_index, branch_index,
                                        jump_index, compare, iv_symbol)) {
     return 1;
@@ -2124,6 +2135,9 @@ static int ir_try_vectorize_slp_mac_i8_at(IRFunction *function,
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
   if (!ir_slp_loop_frame_is_replayable(function, header_index, branch_index,
                                        jump_index, compare, iv_symbol)) {
     return 1;
@@ -2393,6 +2407,9 @@ static int ir_try_vectorize_exp_f32_at(IRFunction *function, size_t header_index
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
   }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
+  }
 
   /* The expf call: r = expf(v), with v and r temps. */
   const char *call_arg = NULL, *call_res = NULL;
@@ -2557,6 +2574,9 @@ static int ir_try_vectorize_silu_f32_at(IRFunction *function,
   if (jump_index == (size_t)-1 ||
       ir_loop_body_has_nested_while(function, branch_index + 1, jump_index)) {
     return 1;
+  }
+  if (!ir_fused_loop_exit_is_adjacent(function, jump_index, branch->text)) {
+    return 1; /* threaded exit: fusing would delete the exit edge */
   }
 
   /* expf call: exp_res = expf(exp_arg). */
