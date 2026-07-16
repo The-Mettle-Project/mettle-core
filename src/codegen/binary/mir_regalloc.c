@@ -41,10 +41,11 @@ static const BinaryGpRegister MIR_GP_POOL[] = {
  * are now allocatable (the encoder scratch moved to R10/R11): they are volatile
  * — so a cross-call value never lands in them (it uses MIR_GP_CROSSCALL_POOL) —
  * and they carry implicit clobbers from the divide family, setcc, and variable
- * shifts, which mir_reg_clobbered_in_range keeps a live value out of. RAX is not
- * an ABI argument register (poolable even in non-leaf functions); RCX/RDX/R8/R9
- * are, so they are reclaimed only in leaf functions (mir_reg_poolable). RSI/RDI
- * are callee-saved on Win64. */
+ * shifts, which mir_reg_clobbered_in_range keeps a live value out of. The ABI
+ * argument registers (RCX/RDX/R8/R9 on Win64) are reclaimed unless they hold an
+ * incoming parameter (mir_reg_poolable): outgoing-argument homing writes are
+ * explicit phys-dst MOVs, which the same clobber index keeps live values out
+ * of. RSI/RDI are callee-saved on Win64. */
 static const BinaryGpRegister MIR_GP_EXTRA[] = {
     BINARY_GP_RAX, BINARY_GP_RCX, BINARY_GP_RDX, BINARY_GP_RSI,
     BINARY_GP_RDI, BINARY_GP_R8,  BINARY_GP_R9};
@@ -127,20 +128,19 @@ static int mir_reg_arg_index(BinaryGpRegister reg) {
 }
 
 /* Whether `reg` may join the non-cross-call allocatable pool.
- * An arg register is poolable only when it carries NO incoming parameter (its
- * arg index >= param_count, so prologue homing never reads it) AND the function
- * makes no real call. In a function WITH calls, an outgoing-argument homing
- * sequence (`mov rcx,a0; mov rdx,a1; mov r8,a2; mov r9,a3`) writes the arg
- * registers before the call with no per-write clobber event the allocator
- * checks argument SOURCES against: a value allocated into R8/R9 that is still
- * needed as a later argument source (or by any use between the homing writes
- * and its interval end) is silently destroyed — the parallel-move hazard the
- * pool exclusion exists to prevent (see MIR_GP_POOL and has_xmm_arg_call).
- * This bit ignoring `is_leaf` let huge high-pressure functions color values
- * into R8/R9 and miscompile (ornith process_token: NaN under --release).
+ * An arg register is poolable when it carries NO incoming parameter (its arg
+ * index >= param_count, so prologue homing never reads it). Outgoing calls do
+ * NOT bar it, even though the pre-call homing sequence writes the arg
+ * registers: every explicit `MIR_MOV phys(reg), value` is a clobber event in
+ * mir_reg_clobbered_in_range's per-register index, so a value whose interval
+ * contains a homing write is never placed in that register; a value that
+ * SPANS the call is cross-call and barred from all volatiles. (Verified by
+ * tests/test_regalloc_argreg_call_pressure.mettle, which forces enough
+ * pressure that argument sources land in R8/R9 around a 4-arg call.)
  * Non-arg callee-saved registers (RSI/RDI on Win64) are always poolable. */
 static int mir_reg_poolable(BinaryGpRegister reg, size_t param_count,
                             int is_leaf) {
+  (void)is_leaf;
   int ai = mir_reg_arg_index(reg);
   if (ai < 0) {
     return 1; /* not an arg register: safe on both ABIs */
@@ -148,7 +148,7 @@ static int mir_reg_poolable(BinaryGpRegister reg, size_t param_count,
   if ((size_t)ai < param_count) {
     return 0; /* holds a live incoming parameter -> homing source */
   }
-  return is_leaf ? 1 : 0; /* dead arg reg: safe only with no outgoing calls */
+  return 1; /* dead arg reg: homing writes are indexed clobber events */
 }
 
 /* Build the non-cross-call GP pool: the universally-safe base, then any

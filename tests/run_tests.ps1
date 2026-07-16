@@ -2196,6 +2196,28 @@ catch {
   Write-CaseResult -Name "opt_fused_loop_threaded_exit" -Passed $false -Reason $_.Exception.Message
 }
 
+# Arg-register pool invariant: values whose intervals contain an outgoing
+# argument homing write must never be placed in that argument register (the
+# explicit-writes clobber index). Adversarial pressure shape, self-checking at
+# --release: 55 = checksum matches, 1 = a homing move clobbered a live source.
+$total++
+try {
+  $exePath = Join-Path $tmpDir "regalloc_argreg_call_pressure.exe"
+  $buildOut = & $CompilerPath --build --release "tests\test_regalloc_argreg_call_pressure.mettle" -o $exePath 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "argreg pressure build failed: $buildOut"
+  }
+  & $exePath 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 55) {
+    throw "argreg pressure exited with $LASTEXITCODE (expected 55)"
+  }
+  Write-CaseResult -Name "regalloc_argreg_call_pressure" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "regalloc_argreg_call_pressure" -Passed $false -Reason $_.Exception.Message
+}
+
 # Global float variables: compile with --build and verify they read back their
 # initializer (and survive mutation) instead of reading 0 from an uninitialized
 # XMM lane. Returns 25+125+35+30 = 215.
