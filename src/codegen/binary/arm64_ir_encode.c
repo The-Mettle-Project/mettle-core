@@ -364,8 +364,60 @@ static int fn_returns_float(const IRFunction *fn, const IRProgram *prog,
   return rf;
 }
 
-/* Load an IR value operand (temp/local/int/float) into `dest` as raw 64-bit
- * bits (a float operand yields its IEEE pattern). */
+/* Materialize the address of a NUL-terminated string literal into `dest`.
+ * Object emission pools the bytes into .rodata behind a local symbol resolved
+ * by page/lo12 relocations; the legacy self-contained path embeds the bytes
+ * in the text stream (branched over) at a known virtual address. */
+static void emit_string_literal_address(Arm64Emit *e, Arm64ObjectContext *object,
+                                        const char *str, Arm64Reg dest) {
+  if (!str) str = "";
+  if (object) {
+    char symbol[64];
+    size_t offset = 0;
+    snprintf(symbol, sizeof(symbol), ".Lmtlc.str.%u", object->string_id++);
+    if (!binary_emitter_append_bytes(object->emitter, object->rodata_section,
+                                     str, strlen(str) + 1, &offset) ||
+        !binary_emitter_define_symbol(object->emitter, symbol,
+                                      BINARY_SYMBOL_LOCAL,
+                                      object->rodata_section, offset,
+                                      strlen(str) + 1)) {
+      e->error = 1;
+      return;
+    }
+    emit_symbol_address(e, object, dest, symbol);
+  } else {
+    int past = arm64_new_label(e);
+    arm64_emit_b(e, past);
+    size_t soff = arm64_here(e);
+    arm64_emit_bytes(e, str, strlen(str) + 1);
+    arm64_bind_label(e, past);
+    emit_imm(e, dest, (uint64_t)ELF_BASE + ELF_HDRS + soff);
+  }
+}
+
+static const IRModuleSymbol *module_function(const IRProgram *program,
+                                             const char *name);
+
+/* Emit a bl to an external (or not-yet-seen) symbol through a CALL26
+ * relocation, declaring the symbol on first use. Object emission only. */
+static int emit_external_call(Arm64Emit *e, Arm64ObjectContext *object,
+                              const IRProgram *prog, const char *name) {
+  const IRModuleSymbol *callee = module_function(prog, name);
+  const char *link_name = callee ? module_link_name(callee) : name;
+  if (!binary_emitter_find_symbol(object->emitter, link_name) &&
+      !binary_emitter_declare_external(object->emitter, link_name)) {
+    e->error = 1;
+    return 0;
+  }
+  size_t call_offset = arm64_here(e);
+  arm64_emit_word(e, arm64_bl(0));
+  return object_add_relocation(e, object, call_offset,
+                               BINARY_RELOCATION_ARM64_CALL26, link_name);
+}
+
+/* Load an IR value operand (temp/local/int/float/string) into `dest` as raw
+ * 64-bit bits (a float operand yields its IEEE pattern; a string literal
+ * yields its address). */
 static Arm64Reg load_into(Arm64Emit *e, SlotMap *s, const IROperand *op,
                           Arm64Reg dest) {
   switch (op->kind) {
@@ -374,6 +426,9 @@ static Arm64Reg load_into(Arm64Emit *e, SlotMap *s, const IROperand *op,
     return dest;
   case IR_OPERAND_FLOAT:
     emit_imm(e, dest, ieee_bits(op));
+    return dest;
+  case IR_OPERAND_STRING:
+    emit_string_literal_address(e, s->object, op->name, dest);
     return dest;
   case IR_OPERAND_TEMP:
   case IR_OPERAND_SYMBOL: {
@@ -840,6 +895,30 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
         }
         break;
       }
+      /* Runtime traps: a plain relocatable object may only assume libc
+       * (matching the x86 backend without stack-trace support), so
+       * mettle_crash_trap[_ex] lowers to puts(message); exit(1). The legacy
+       * self-contained product has no libc and exits via the raw syscall. */
+      if (strcmp(in->text, "mettle_crash_trap_ex") == 0 ||
+          strcmp(in->text, "mettle_crash_trap") == 0) {
+        size_t msg_index =
+            strcmp(in->text, "mettle_crash_trap_ex") == 0 ? 1u : 0u;
+        if (object) {
+          if (in->argument_count > msg_index) {
+            load_into(e, &slots, &in->arguments[msg_index], ARM64_X0);
+          } else {
+            emit_string_literal_address(e, object, "Fatal error", ARM64_X0);
+          }
+          if (!emit_external_call(e, object, prog, "puts")) break;
+          emit_imm(e, ARM64_X0, 1);
+          if (!emit_external_call(e, object, prog, "exit")) break;
+        } else {
+          emit_imm(e, ARM64_X0, 1);
+          arm64_emit_word(e, arm64_movz(1, ARM64_X8, 93, 0)); /* exit */
+          arm64_emit_word(e, 0xD4000001u);                    /* svc #0 */
+        }
+        break;
+      }
       /* Marshal through one AAPCS64 layout. GP and FP registers are independent
        * banks; overflow values occupy the frame's reserved outgoing-call area
        * at [sp,#stack_offset]. This is required for cuLaunchKernel's 11-argument
@@ -886,18 +965,7 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
       if (prog_fn_index(prog, in->text) >= 0) {
         arm64_emit_bl(e, label_for(e, fns, in->text));
       } else if (object) {
-        const IRModuleSymbol *callee = module_function(prog, in->text);
-        const char *link_name = callee ? module_link_name(callee) : in->text;
-        if (!binary_emitter_find_symbol(object->emitter, link_name) &&
-            !binary_emitter_declare_external(object->emitter, link_name)) {
-          e->error = 1;
-          break;
-        }
-        size_t call_offset = arm64_here(e);
-        arm64_emit_word(e, arm64_bl(0));
-        if (!object_add_relocation(e, object, call_offset,
-                                   BINARY_RELOCATION_ARM64_CALL26,
-                                   link_name)) {
+        if (!emit_external_call(e, object, prog, in->text)) {
           break;
         }
       } else {

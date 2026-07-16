@@ -217,7 +217,7 @@ jobs:
           test "$(grep -c 'popc.b32' /tmp/mettle-gb10-sparse.ptx)" -eq 48
           test "$(grep -c 'mtlc.tensor_chain resident native-mma sparse-f16-2to4' /tmp/mettle-gb10-sparse.ptx)" -eq 1
           test "$(grep -c 'mtlc.tensor_loop resident native-mma sparse-f16-2to4' /tmp/mettle-gb10-sparse.ptx)" -eq 1
-          ! grep -q 'tcgen05' /tmp/mettle-gb10-sparse.ptx
+          if grep -q 'tcgen05' /tmp/mettle-gb10-sparse.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 tests/gpu/tensor_tiled.mettle -o /tmp/mettle-gb10-tiled.ptx
           test "$(grep -c 'mtlc.tensor_mma tiled' /tmp/mettle-gb10-tiled.ptx)" -eq 13
           test "$(grep -c 'subtiles=4 reuse=A' /tmp/mettle-gb10-tiled.ptx)" -eq 12
@@ -238,7 +238,7 @@ jobs:
           test "$(grep -c 'mtlc.tensor_matmul cooperative-tail exact M/N/K edge replay' /tmp/mettle-gb10-matmul.ptx)" -eq 5
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 --gpu-tensor-tuple-budget=1 tests/gpu/tensor_matmul.mettle -o /tmp/mettle-gb10-matmul-budget1.ptx
           test "$(grep -c 'mtlc.tensor_matmul cooperative-only: native accumulator exceeds tensor tuple budget' /tmp/mettle-gb10-matmul-budget1.ptx)" -eq 5
-          ! grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-budget1.ptx
+          if grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-budget1.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 tests/gpu/tensor_matmul_transpose.mettle -o /tmp/mettle-gb10-matmul-transpose.ptx
           test "$(grep -c 'mtlc.tensor_matmul native interior runtime-K resident stable-wmma' /tmp/mettle-gb10-matmul-transpose.ptx)" -eq 3
           test "$(grep -c 'mtlc.tensor_matmul cooperative-full exact M/N/K edge replay' /tmp/mettle-gb10-matmul-transpose.ptx)" -eq 3
@@ -251,10 +251,10 @@ jobs:
           test "$(grep -c 'cvt.rn.f16x2.e4m3x2' /tmp/mettle-gb10-matmul-fp8.ptx)" -eq 4
           test "$(grep -c 'cvt.rn.f16x2.e5m2x2' /tmp/mettle-gb10-matmul-fp8.ptx)" -eq 4
           test "$(grep -c 'mma.sync' /tmp/mettle-gb10-matmul-fp8.ptx)" -eq 8
-          ! grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-fp8.ptx
+          if grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-fp8.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 --gpu-tensor-tuple-budget=1 tests/gpu/tensor_matmul_fp8.mettle -o /tmp/mettle-gb10-matmul-fp8-budget1.ptx
           test "$(grep -c 'mtlc.tensor_matmul cooperative-only: native accumulator exceeds tensor tuple budget' /tmp/mettle-gb10-matmul-fp8-budget1.ptx)" -eq 2
-          ! grep -Eq 'wmma.mma|mma.sync' /tmp/mettle-gb10-matmul-fp8-budget1.ptx
+          if grep -Eq 'wmma.mma|mma.sync' /tmp/mettle-gb10-matmul-fp8-budget1.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 tests/gpu/tensor_matmul_scaled.mettle -o /tmp/mettle-gb10-matmul-scaled.ptx
           test "$(grep -c 'mtlc.tensor_matmul native interior runtime-K resident direct-mma' /tmp/mettle-gb10-matmul-scaled.ptx)" -eq 4
           test "$(grep -c 'mtlc.tensor_matmul cooperative-full exact M/N/K edge replay' /tmp/mettle-gb10-matmul-scaled.ptx)" -eq 4
@@ -263,20 +263,20 @@ jobs:
           test "$(grep -c 'mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e3m2.e2m3.f32.ue8m0' /tmp/mettle-gb10-matmul-scaled.ptx)" -eq 4
           test "$(grep -c 'mma.sync.aligned.m16n8k64.row.col.kind::mxf4.block_scale.scale_vec::2X.f32.e2m1.e2m1.f32.ue8m0' /tmp/mettle-gb10-matmul-scaled.ptx)" -eq 4
           test "$(grep -c 'mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3' /tmp/mettle-gb10-matmul-scaled.ptx)" -eq 4
-          ! grep -Eq 'cvt.rn.f16x2.(e2m1|e2m3|e3m2)x2|wmma.mma' /tmp/mettle-gb10-matmul-scaled.ptx
+          if grep -Eq 'cvt.rn.f16x2.(e2m1|e2m3|e3m2)x2|wmma.mma' /tmp/mettle-gb10-matmul-scaled.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 --gpu-tensor-tuple-budget=1 tests/gpu/tensor_matmul_scaled.mettle -o /tmp/mettle-gb10-matmul-scaled-budget1.ptx
           test "$(grep -c 'mtlc.tensor_matmul cooperative-only: native accumulator exceeds tensor tuple budget' /tmp/mettle-gb10-matmul-scaled-budget1.ptx)" -eq 4
-          ! grep -Eq 'wmma.mma|mma.sync' /tmp/mettle-gb10-matmul-scaled-budget1.ptx
+          if grep -Eq 'wmma.mma|mma.sync' /tmp/mettle-gb10-matmul-scaled-budget1.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 tests/gpu/tensor_matmul_sparse.mettle -o /tmp/mettle-gb10-matmul-sparse.ptx
           test "$(grep -c 'mtlc.tensor_matmul native interior runtime-K resident direct-mma' /tmp/mettle-gb10-matmul-sparse.ptx)" -eq 2
           test "$(grep -c 'mtlc.tensor_matmul cooperative-full exact M/N/K edge replay' /tmp/mettle-gb10-matmul-sparse.ptx)" -eq 2
           test "$(grep -c 'mtlc.tensor_matmul cooperative-tail exact M/N/K edge replay' /tmp/mettle-gb10-matmul-sparse.ptx)" -eq 2
           test "$(grep -c 'mma.sp::ordered_metadata.sync.aligned.m16n8k16' /tmp/mettle-gb10-matmul-sparse.ptx)" -eq 8
           test "$(grep -Ec '@%p[0-9]+ ld.global.b16' /tmp/mettle-gb10-matmul-sparse.ptx)" -eq 4
-          ! grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-sparse.ptx
+          if grep -q 'wmma.mma' /tmp/mettle-gb10-matmul-sparse.ptx; then exit 1; fi
           ./bin/mettle -O --emit-ptx --gpu-arch=gb10 --gpu-tensor-tuple-budget=1 tests/gpu/tensor_matmul_sparse.mettle -o /tmp/mettle-gb10-matmul-sparse-budget1.ptx
           test "$(grep -c 'mtlc.tensor_matmul cooperative-only: native accumulator exceeds tensor tuple budget' /tmp/mettle-gb10-matmul-sparse-budget1.ptx)" -eq 2
-          ! grep -Eq 'wmma.mma|mma.sp' /tmp/mettle-gb10-matmul-sparse-budget1.ptx
+          if grep -Eq 'wmma.mma|mma.sp' /tmp/mettle-gb10-matmul-sparse-budget1.ptx; then exit 1; fi
           if command -v ptxas >/dev/null 2>&1; then
             python3 tools/gpu/ptxas_profile.py --arch sm_121a --max-registers 56 --require-zero-spills --pretty -o /tmp/mettle-gb10-sparse.resources.json /tmp/mettle-gb10-sparse.ptx
             python3 tools/gpu/ptxas_profile.py --arch sm_121a --max-registers 64 --require-zero-spills --pretty -o /tmp/mettle-gb10-tiled.resources.json /tmp/mettle-gb10-tiled.ptx
