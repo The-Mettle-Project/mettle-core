@@ -16,11 +16,17 @@
 extern "C" {
 #endif
 
-/* Run the classical optimizer on the module, using the knobs on `ctx`
- * (opt level, whole-program, explain). A NULL ctx uses conservative defaults
- * (optimize on, no explain, not whole-program). Returns 1 on success, 0 on
- * error (e.g. a violated `@simd!` contract, already reported to stderr). */
+/* Optimize without an explicit target. Modules containing kernels take the
+ * conservative target-neutral, kernel-reachable path; other modules take the
+ * full x86-64 pipeline. Prefer mtlc_optimize_for when the consumer is known.
+ * A NULL ctx enables optimization with conservative context defaults. */
 int mtlc_optimize(MtlcContext *ctx, MtlcModule *module);
+
+/* Optimize for a concrete consumer while preserving that target's accepted IR
+ * subset. X86_64 uses the full pipeline. ARM64 uses scalar target-neutral
+ * transforms. PTX/SPIR-V additionally restrict work to kernel-reachable device
+ * code and retain every semantic GPU operation. */
+int mtlc_optimize_for(MtlcContext *ctx, MtlcModule *module, MtlcArch arch);
 
 /* Statistics from the ML optimizer (mirrors the backend's MLOptStats). */
 typedef struct {
@@ -45,12 +51,12 @@ int mtlc_emit_object(MtlcContext *ctx, MtlcModule *module, const char *path);
 
 /* Lower the module for `arch` and write the target's natural product to `path`:
  *   MTLC_ARCH_X86_64  a host-format relocatable object (same as mtlc_emit_object)
- *   MTLC_ARCH_ARM64   a self-contained static AArch64 ELF executable
- *                     (the scalar-integer subset; `main` becomes the entry)
- *   MTLC_ARCH_PTX     an NVIDIA PTX module (text), one .entry per function
- *   MTLC_ARCH_SPIRV   a SPIR-V binary module (OpenCL 1.2), one kernel per function
- * The ARM64/PTX/SPIR-V paths consume the UNOPTIMIZED IR shape -- emit before
- * calling mtlc_optimize on the module. Returns 1 on success, 0 on error. */
+ *   MTLC_ARCH_ARM64   an AArch64 ELF64 relocatable object (AAPCS64)
+ *   MTLC_ARCH_PTX     an NVIDIA PTX module (text), one .entry per declared kernel
+ *   MTLC_ARCH_SPIRV   a SPIR-V binary module (OpenCL 2.0), one entry per kernel
+ * Every path accepts unoptimized IR. For optimized portable products, call
+ * mtlc_optimize_for with the same arch first; never feed ARM64/PTX/SPIR-V the
+ * x86-only full-pipeline shape. Returns 1 on success, 0 on error. */
 int mtlc_emit(MtlcContext *ctx, MtlcModule *module, MtlcArch arch,
               const char *path);
 

@@ -313,6 +313,26 @@ int ir_clone_instruction_plain(const IRInstruction *source,
 
   memset(out, 0, sizeof(*out));
   out->op = source->op;
+  out->intrinsic = source->intrinsic;
+  out->address_space = source->address_space;
+  out->memory_order = source->memory_order;
+  out->failure_memory_order = source->failure_memory_order;
+  out->memory_scope = source->memory_scope;
+  out->memory_regions = source->memory_regions;
+  out->async_copy_element_count = source->async_copy_element_count;
+  out->async_copy_transaction_bytes = source->async_copy_transaction_bytes;
+  out->async_copy_pending_groups = source->async_copy_pending_groups;
+  out->async_copy_cache = source->async_copy_cache;
+  out->async_copy_generated = source->async_copy_generated;
+  out->tensor_transfer = source->tensor_transfer;
+  out->tensor_transfer_has_prepared_view =
+      source->tensor_transfer_has_prepared_view;
+  out->tensor_mma = source->tensor_mma;
+  out->tensor_epilogue = source->tensor_epilogue;
+  out->tensor_mma_count = source->tensor_mma_count;
+  out->tensor_residency_id = source->tensor_residency_id;
+  out->tensor_residency_role = source->tensor_residency_role;
+  out->tensor_residency_scope = source->tensor_residency_scope;
   out->location = source->location;
   out->is_float = source->is_float;
   out->is_unsigned = source->is_unsigned;
@@ -323,6 +343,7 @@ int ir_clone_instruction_plain(const IRInstruction *source,
   out->is_unsigned = source->is_unsigned;
   out->allocates = source->allocates; /* string-concat heap allocation marker */
   out->ast_ref = source->ast_ref;
+  out->value_type = source->value_type;
 
   if (!ir_operand_clone(&source->dest, &out->dest) ||
       !ir_operand_clone(&source->lhs, &out->lhs) ||
@@ -353,6 +374,16 @@ int ir_clone_instruction_plain(const IRInstruction *source,
       }
     }
   }
+  if (source->argument_types && source->argument_count > 0) {
+    out->argument_types =
+        malloc(source->argument_count * sizeof(*out->argument_types));
+    if (!out->argument_types) {
+      ir_instruction_destroy_storage(out);
+      return 0;
+    }
+    memcpy(out->argument_types, source->argument_types,
+           source->argument_count * sizeof(*out->argument_types));
+  }
 
   return 1;
 }
@@ -370,6 +401,26 @@ static int ir_clone_instruction_for_inline(const IRInstruction *source,
 
   memset(out, 0, sizeof(*out));
   out->op = source->op;
+  out->intrinsic = source->intrinsic;
+  out->address_space = source->address_space;
+  out->memory_order = source->memory_order;
+  out->failure_memory_order = source->failure_memory_order;
+  out->memory_scope = source->memory_scope;
+  out->memory_regions = source->memory_regions;
+  out->async_copy_element_count = source->async_copy_element_count;
+  out->async_copy_transaction_bytes = source->async_copy_transaction_bytes;
+  out->async_copy_pending_groups = source->async_copy_pending_groups;
+  out->async_copy_cache = source->async_copy_cache;
+  out->async_copy_generated = source->async_copy_generated;
+  out->tensor_transfer = source->tensor_transfer;
+  out->tensor_transfer_has_prepared_view =
+      source->tensor_transfer_has_prepared_view;
+  out->tensor_mma = source->tensor_mma;
+  out->tensor_epilogue = source->tensor_epilogue;
+  out->tensor_mma_count = source->tensor_mma_count;
+  out->tensor_residency_id = source->tensor_residency_id;
+  out->tensor_residency_role = source->tensor_residency_role;
+  out->tensor_residency_scope = source->tensor_residency_scope;
   out->location = source->location;
   out->is_float = source->is_float;
   out->is_unsigned = source->is_unsigned;
@@ -377,6 +428,7 @@ static int ir_clone_instruction_for_inline(const IRInstruction *source,
   out->is_unsigned = source->is_unsigned; /* unsigned div/shr + zero-ext loads */
   out->allocates = source->allocates;     /* string-concat allocation marker */
   out->ast_ref = NULL;
+  out->value_type = source->value_type;
 
   if (!ir_inline_rewrite_operand(&source->dest, &out->dest, symbol_map,
                                  temp_map, label_map, inline_prefix) ||
@@ -424,6 +476,16 @@ static int ir_clone_instruction_for_inline(const IRInstruction *source,
         return 0;
       }
     }
+  }
+  if (source->argument_types && source->argument_count > 0) {
+    out->argument_types =
+        malloc(source->argument_count * sizeof(*out->argument_types));
+    if (!out->argument_types) {
+      ir_instruction_destroy_storage(out);
+      return 0;
+    }
+    memcpy(out->argument_types, source->argument_types,
+           source->argument_count * sizeof(*out->argument_types));
   }
 
   return 1;

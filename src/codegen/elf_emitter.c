@@ -1,4 +1,4 @@
-/* ELF64 (x86-64) relocatable object writer.
+/* ELF64 relocatable object writer for x86-64 and AArch64.
  *
  * Consumes the format-neutral BinaryEmitter model (sections, symbols,
  * relocations) and serializes a relocatable ELF object that the system linker
@@ -40,6 +40,7 @@
 #define ELFOSABI_SYSV 0
 #define ET_REL 1
 #define EM_X86_64 62
+#define EM_AARCH64 183
 
 #define SHT_NULL 0
 #define SHT_PROGBITS 1
@@ -57,12 +58,19 @@
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
 #define STT_NOTYPE 0
+#define STT_OBJECT 1
 #define STT_FUNC 2
 #define SHN_UNDEF 0
 
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
+
+/* AAELF64 2025Q4, sections 5.7.5-5.7.7. */
+#define R_AARCH64_ABS64 257
+#define R_AARCH64_ADR_PREL_PG_HI21 275
+#define R_AARCH64_ADD_ABS_LO12_NC 277
+#define R_AARCH64_CALL26 283
 
 #define ELF64_ST_INFO(bind, type) (((bind) << 4) + ((type) & 0xf))
 #define ELF64_R_INFO(sym, type) (((uint64_t)(sym) << 32) | ((uint32_t)(type)))
@@ -167,8 +175,32 @@ static uint32_t elf_section_type(BinarySectionKind kind) {
 
 /* Translates an abstract relocation kind into an ELF x86-64 relocation type and
  * the implicit addend that reproduces the model's COFF-derived semantics. */
-static int elf_map_relocation(BinaryRelocationKind kind, uint32_t *type_out,
+static int elf_map_relocation(BinaryTargetFormat target,
+                              BinaryRelocationKind kind, uint32_t *type_out,
                               int64_t *implicit_addend_out) {
+  if (target == BINARY_TARGET_FORMAT_ELF_ARM64) {
+    *implicit_addend_out = 0;
+    switch (kind) {
+    case BINARY_RELOCATION_ADDR64:
+      *type_out = R_AARCH64_ABS64;
+      return 1;
+    case BINARY_RELOCATION_ARM64_CALL26:
+      *type_out = R_AARCH64_CALL26;
+      return 1;
+    case BINARY_RELOCATION_ARM64_ADR_PREL_PG_HI21:
+      *type_out = R_AARCH64_ADR_PREL_PG_HI21;
+      return 1;
+    case BINARY_RELOCATION_ARM64_ADD_ABS_LO12_NC:
+      *type_out = R_AARCH64_ADD_ABS_LO12_NC;
+      return 1;
+    default:
+      return 0;
+    }
+  }
+
+  if (target != BINARY_TARGET_FORMAT_ELF_X64) {
+    return 0;
+  }
   switch (kind) {
   case BINARY_RELOCATION_REL32:
     *type_out = R_X86_64_PC32;
@@ -277,7 +309,8 @@ int binary_emitter_write_elf_object_file(BinaryEmitter *emitter,
                                   "ELF relocation refers to an invalid section");
       goto cleanup;
     }
-    if (!elf_map_relocation(reloc->kind, &type, &addend)) {
+    if (!elf_map_relocation(emitter->target_format, reloc->kind, &type,
+                            &addend)) {
       binary_emitter_record_error(
           emitter, "Unsupported relocation kind for ELF object output");
       goto cleanup;
@@ -393,6 +426,14 @@ int binary_emitter_write_elf_object_file(BinaryEmitter *emitter,
           if (emitter->sections[symbol->section_index].kind ==
               BINARY_SECTION_TEXT) {
             type = STT_FUNC;
+          } else if (symbol->binding != BINARY_SYMBOL_LOCAL ||
+                     emitter->sections[symbol->section_index].kind ==
+                         BINARY_SECTION_DATA ||
+                     emitter->sections[symbol->section_index].kind ==
+                         BINARY_SECTION_BSS ||
+                     emitter->sections[symbol->section_index].kind ==
+                         BINARY_SECTION_RDATA) {
+            type = STT_OBJECT;
           }
           bind = is_local ? STB_LOCAL : STB_GLOBAL;
         }
@@ -568,7 +609,10 @@ int binary_emitter_write_elf_object_file(BinaryEmitter *emitter,
       goto write_error;
     }
     uint16_t e_type = ET_REL;
-    uint16_t e_machine = EM_X86_64;
+    uint16_t e_machine =
+        emitter->target_format == BINARY_TARGET_FORMAT_ELF_ARM64
+            ? EM_AARCH64
+            : EM_X86_64;
     uint32_t e_version = EV_CURRENT;
     uint64_t e_entry = 0;
     uint64_t e_phoff = 0;
@@ -633,7 +677,8 @@ int binary_emitter_write_elf_object_file(BinaryEmitter *emitter,
       }
       uint32_t type = 0;
       int64_t implicit_addend = 0;
-      if (!elf_map_relocation(reloc->kind, &type, &implicit_addend)) {
+      if (!elf_map_relocation(emitter->target_format, reloc->kind, &type,
+                              &implicit_addend)) {
         binary_emitter_record_error(emitter,
                                     "Unsupported relocation kind for ELF");
         goto write_error;

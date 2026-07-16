@@ -1,6 +1,43 @@
 // Type checker: struct / enum / declaration processing.
 #include "type_checker_internal.h"
 
+/* The current PTX/SPIR-V kernel ABI is intentionally explicit: kernel
+ * parameters are POD scalars or pointers to POD scalars. Rejecting aggregates,
+ * strings, closures, and nested pointers here produces a source diagnostic
+ * instead of a late target-emitter failure or, worse, an ABI mismatch. */
+static int gpu_kernel_scalar_type(const Type *type) {
+  if (!type) {
+    return 0;
+  }
+  switch (type->kind) {
+  case TYPE_INT8:
+  case TYPE_INT16:
+  case TYPE_INT32:
+  case TYPE_INT64:
+  case TYPE_UINT8:
+  case TYPE_UINT16:
+  case TYPE_UINT32:
+  case TYPE_UINT64:
+  case TYPE_BOOL:
+  case TYPE_FLOAT32:
+  case TYPE_FLOAT64:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static int gpu_kernel_parameter_type(const Type *type) {
+  if (!type) {
+    return 0;
+  }
+  if (gpu_kernel_scalar_type(type)) {
+    return 1;
+  }
+  return type->kind == TYPE_POINTER && type->base_type &&
+         gpu_kernel_scalar_type(type->base_type);
+}
+
 // Struct type processing functions
 
 int type_checker_process_struct_declaration(TypeChecker *checker,
@@ -538,6 +575,75 @@ int type_checker_process_declaration(TypeChecker *checker,
       }
     }
 
+    if (var_decl->address_space != AST_ADDRESS_SPACE_DEFAULT) {
+      FunctionDeclaration *owner =
+          checker->current_function_decl &&
+                  checker->current_function_decl->type == AST_FUNCTION_DECLARATION
+              ? (FunctionDeclaration *)checker->current_function_decl->data
+              : NULL;
+      if (!owner || !owner->is_kernel || !current_scope ||
+          current_scope->type == SCOPE_GLOBAL) {
+        type_checker_set_error_at_location(
+            checker, declaration->location,
+            "%s storage is only legal inside a GPU kernel",
+            var_decl->address_space == AST_ADDRESS_SPACE_WORKGROUP ? "workgroup"
+                                                                   : "private");
+        return 0;
+      }
+      if (var_decl->is_const || var_decl->is_extern || var_decl->is_exported) {
+        type_checker_set_error_at_location(
+            checker, declaration->location,
+            "GPU address-space storage must be a local 'var' binding");
+        return 0;
+      }
+      if (var_decl->initializer) {
+        type_checker_set_error_at_location(
+            checker, declaration->location,
+            "%s storage cannot have a declaration initializer; initialize "
+            "elements explicitly",
+            var_decl->address_space == AST_ADDRESS_SPACE_WORKGROUP ? "workgroup"
+                                                                   : "private");
+        return 0;
+      }
+      int is_static_storage =
+          var_type && var_type->kind == TYPE_ARRAY && var_type->base_type &&
+          var_type->array_size > 0 && var_type->array_size <= UINT32_MAX;
+      int is_dynamic_workgroup_view =
+          var_type && var_type->kind == TYPE_POINTER && var_type->base_type &&
+          var_decl->address_space == AST_ADDRESS_SPACE_WORKGROUP;
+      if (!is_static_storage && !is_dynamic_workgroup_view) {
+        type_checker_set_error_at_location(
+            checker, declaration->location,
+            "GPU address-space storage requires a statically sized array type "
+            "with at most %u elements, or a pointer type for a dynamic "
+            "workgroup view",
+            UINT32_MAX);
+        return 0;
+      }
+      Type *element_type = var_type->base_type;
+      switch (element_type->kind) {
+      case TYPE_INT8:
+      case TYPE_INT16:
+      case TYPE_INT32:
+      case TYPE_INT64:
+      case TYPE_UINT8:
+      case TYPE_UINT16:
+      case TYPE_UINT32:
+      case TYPE_UINT64:
+      case TYPE_BOOL:
+      case TYPE_FLOAT32:
+      case TYPE_FLOAT64:
+        break;
+      default:
+        type_checker_set_error_at_location(
+            checker, declaration->location,
+            "GPU address-space binding '%s' must have a scalar numeric element "
+            "type",
+            var_decl->name);
+        return 0;
+      }
+    }
+
     // If there's an initializer, validate it. When validation fails but the
     // declared type is known, the variable is still registered with that type
     // ("poisoned") so later uses don't cascade into bogus undefined-variable
@@ -735,6 +841,14 @@ int type_checker_process_declaration(TypeChecker *checker,
 
     var_symbol->is_extern = var_decl->is_extern;
     var_symbol->is_immutable = var_decl->is_const;
+    var_symbol->is_address_space_binding =
+        var_decl->address_space != AST_ADDRESS_SPACE_DEFAULT;
+    var_symbol->address_space =
+        var_decl->address_space == AST_ADDRESS_SPACE_WORKGROUP
+            ? MTLC_ADDRESS_SPACE_WORKGROUP
+        : var_decl->address_space == AST_ADDRESS_SPACE_PRIVATE
+            ? MTLC_ADDRESS_SPACE_PRIVATE
+            : MTLC_ADDRESS_SPACE_DEFAULT;
     if (var_decl->is_extern) {
       const char *effective_link_name = type_checker_decl_link_name(
           var_decl->name, var_decl->is_extern, var_decl->link_name);
@@ -764,6 +878,7 @@ int type_checker_process_declaration(TypeChecker *checker,
           symbol_table_get_current_scope(checker->symbol_table);
       if (declare_scope && declare_scope->type != SCOPE_GLOBAL) {
         int track_definite_init =
+            !var_symbol->is_address_space_binding &&
             !(var_type &&
               (var_type->kind == TYPE_ARRAY || var_type->kind == TYPE_STRUCT ||
                var_type->kind == TYPE_STRING));
@@ -817,6 +932,25 @@ int type_checker_process_declaration(TypeChecker *checker,
 
     Scope *current_scope =
         symbol_table_get_current_scope(checker->symbol_table);
+    if (func_decl->is_kernel &&
+        (!current_scope || current_scope->type != SCOPE_GLOBAL)) {
+      type_checker_set_error_at_location(
+          checker, declaration->location,
+          "GPU kernel '%s' must be declared at top level", func_decl->name);
+      return 0;
+    }
+    if (func_decl->is_kernel && func_decl->is_extern) {
+      type_checker_set_error_at_location(
+          checker, declaration->location,
+          "GPU kernel '%s' cannot be an extern declaration", func_decl->name);
+      return 0;
+    }
+    if (func_decl->is_kernel && !func_decl->body) {
+      type_checker_set_error_at_location(
+          checker, declaration->location,
+          "GPU kernel '%s' must have a body", func_decl->name);
+      return 0;
+    }
     if (func_decl->is_extern &&
         (!current_scope || current_scope->type != SCOPE_GLOBAL)) {
       type_checker_set_error_at_location(
@@ -843,6 +977,13 @@ int type_checker_process_declaration(TypeChecker *checker,
       }
     } else {
       return_type = checker->builtin_void;
+    }
+    if (func_decl->is_kernel && return_type->kind != TYPE_VOID) {
+      type_checker_set_error_at_location(
+          checker, declaration->location,
+          "GPU kernel '%s' must return void (remove '-> %s')", func_decl->name,
+          return_type->name ? return_type->name : "non-void");
+      return 0;
     }
 
     // Resolve parameter types and check for duplicate parameter names
@@ -876,6 +1017,17 @@ int type_checker_process_declaration(TypeChecker *checker,
           type_checker_report_undefined_symbol(checker, declaration->location,
                                                func_decl->parameter_types[i],
                                                "type");
+          free(param_types);
+          return 0;
+        }
+        if (func_decl->is_kernel &&
+            !gpu_kernel_parameter_type(param_types[i])) {
+          type_checker_set_error_at_location(
+              checker, declaration->location,
+              "GPU kernel '%s' parameter '%s' has unsupported ABI type '%s'; "
+              "use a scalar or a pointer to a scalar",
+              func_decl->name, func_decl->parameter_names[i],
+              param_types[i]->name ? param_types[i]->name : "unknown");
           free(param_types);
           return 0;
         }
@@ -1053,6 +1205,11 @@ int type_checker_process_declaration(TypeChecker *checker,
               "Failed to create parameter symbol");
           symbol_table_exit_scope(checker->symbol_table);
           return 0;
+        }
+        if (func_decl->is_kernel && active_param_types &&
+            active_param_types[i] &&
+            active_param_types[i]->kind == TYPE_POINTER) {
+          param_symbol->address_space = MTLC_ADDRESS_SPACE_GLOBAL;
         }
         if (!symbol_table_declare(checker->symbol_table, param_symbol)) {
           type_checker_report_duplicate_declaration(
@@ -1357,6 +1514,14 @@ int type_checker_process_declaration(TypeChecker *checker,
       type_checker_set_error_at_location(
           checker, declaration->location,
           "'%s' is a constant and cannot be assigned to",
+          assignment->variable_name);
+      return 0;
+    }
+    if (var_symbol->is_address_space_binding) {
+      type_checker_set_error_at_location(
+          checker, declaration->location,
+          "GPU address-space binding '%s' cannot be rebound; assign its "
+          "elements instead",
           assignment->variable_name);
       return 0;
     }

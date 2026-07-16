@@ -112,6 +112,8 @@ static const IROptScheduledPass g_ir_fixpoint_passes[] = {
                          IR_OPT_LABEL_JUMP),
     IR_OPT_PASS_ALWAYS(COPY_AND_CONSTANT_PROPAGATION,
                        ir_copy_and_constant_propagation_pass),
+    IR_OPT_PASS_ALWAYS(FUSE_TENSOR_MMA_CHAINS,
+                       ir_fuse_tensor_mma_chains_pass),
     IR_OPT_PASS_ALWAYS(FUSE_ROTATE_ADD, ir_fuse_rotate_add_pass),
     IR_OPT_PASS_WHEN_ALL(STRENGTH_REDUCE_ROTATE_LOOPS,
                          ir_strength_reduce_rotate_loops_pass,
@@ -203,6 +205,66 @@ static const IROptFixpointStage g_ir_fixpoint_stage = {
     "main fixpoint",
     g_ir_fixpoint_passes,
     IR_ARRAY_COUNT(g_ir_fixpoint_passes),
+    IR_OPT_FIXPOINT_MAX_ITERATIONS,
+};
+
+/* Portable targets consume the same scalar/control-flow IR but cannot accept
+ * the x86-only SIMD idioms produced by the full pipeline. Keep this schedule
+ * intentionally target-neutral: no vector opcodes, rotate fusion, host memory
+ * intrinsics, prefetch, or target-specific cost model. */
+static const IROptScheduledPass g_ir_portable_fixpoint_passes[] = {
+    IR_OPT_PASS_ALWAYS(COPY_AND_CONSTANT_PROPAGATION,
+                       ir_copy_and_constant_propagation_pass),
+    IR_OPT_PASS_ALWAYS(FUSE_TENSOR_MMA_CHAINS,
+                       ir_fuse_tensor_mma_chains_pass),
+    IR_OPT_PASS_WHEN_ALL(PROMOTE_GPU_ASYNC_STAGING,
+                         ir_promote_gpu_async_staging_pass,
+                         IR_OPT_FEATURE_LOAD),
+    IR_OPT_PASS_WHEN_ALL(COALESCE_SINGLE_USE_TEMP_ASSIGN,
+                         ir_coalesce_single_use_temp_assign_pass,
+                         IR_OPT_FEATURE_ASSIGN),
+    IR_OPT_PASS_WHEN_ALL(ELIMINATE_SINGLE_USE_FLOAT_SYMBOL_COPIES,
+                         ir_eliminate_single_use_float_symbol_copies_pass,
+                         IR_OPT_FEATURE_ASSIGN),
+    IR_OPT_PASS_ALWAYS(COMMON_SUBEXPRESSION_ELIMINATION,
+                       ir_common_subexpression_elimination_pass),
+    IR_OPT_PASS_ALWAYS(CONSTANT_AND_BRANCH_SIMPLIFY,
+                       ir_constant_and_branch_simplify_pass),
+    IR_OPT_PASS_WHEN_ALL(REASSOCIATE_CONSTANTS, ir_reassociate_constants_pass,
+                         IR_OPT_FEATURE_BINARY),
+    IR_OPT_PASS_WHEN_ALL(ELIMINATE_DEAD_TEMP_WRITES,
+                         ir_eliminate_dead_temp_writes_pass,
+                         IR_OPT_FEATURE_TEMP_WRITE),
+    IR_OPT_PASS_WHEN_ALL_ANY(THREAD_JUMP_TARGETS,
+                             ir_thread_jump_targets_pass,
+                             IR_OPT_FEATURE_LABEL, IR_OPT_BRANCH_TESTS),
+    IR_OPT_PASS_WHEN_ALL_ANY(REMOVE_EMPTY_CONDITIONAL_DIAMONDS,
+                             ir_remove_empty_conditional_diamonds_pass,
+                             IR_OPT_LABEL_JUMP,
+                             IR_OPT_FEATURE_BRANCH_ZERO |
+                                 IR_OPT_FEATURE_BRANCH_EQ),
+    IR_OPT_PASS_WHEN_ALL_ANY(REMOVE_REDUNDANT_FALLTHROUGH_BRANCHES,
+                             ir_remove_redundant_fallthrough_branches_pass,
+                             IR_OPT_FEATURE_LABEL,
+                             IR_OPT_FEATURE_BRANCH_ZERO |
+                                 IR_OPT_FEATURE_BRANCH_EQ),
+    IR_OPT_PASS_WHEN_ALL(REMOVE_REDUNDANT_JUMPS,
+                         ir_remove_redundant_jumps_pass, IR_OPT_LABEL_JUMP),
+    IR_OPT_PASS_ALWAYS(ELIMINATE_UNREACHABLE_STRAIGHTLINE,
+                       ir_eliminate_unreachable_straightline_pass),
+    IR_OPT_PASS_WHEN_ALL_ANY(ELIMINATE_UNREACHABLE_BLOCKS,
+                             ir_eliminate_unreachable_blocks_pass,
+                             IR_OPT_FEATURE_LABEL, IR_OPT_BRANCH_TESTS),
+    IR_OPT_PASS_WHEN_ALL(REMOVE_UNUSED_LABELS, ir_remove_unused_labels_pass,
+                         IR_OPT_FEATURE_LABEL),
+    IR_OPT_PASS_ALWAYS(ELIMINATE_LOAD_SYMBOL_COPY,
+                       ir_eliminate_load_symbol_copy_pass),
+};
+
+static const IROptFixpointStage g_ir_portable_fixpoint_stage = {
+    "target-neutral fixpoint",
+    g_ir_portable_fixpoint_passes,
+    IR_ARRAY_COUNT(g_ir_portable_fixpoint_passes),
     IR_OPT_FIXPOINT_MAX_ITERATIONS,
 };
 
@@ -381,10 +443,57 @@ static int ir_run_program_stage_for_each_function(
   return 1;
 }
 
+static int ir_optimize_portable_program_pipeline(
+    IRProgram *program, const IROptimizeOptions *options) {
+  IRGpuCallGraph graph = {0};
+  char *graph_error = NULL;
+  int gpu_only = options && options->gpu_device_only;
+  int ok = 1;
+
+  ir_optimize_reset_user_error();
+  ir_optimize_set_simd_report(0);
+  ir_optimize_set_explain(options && options->explain,
+                          options ? options->explain_focus_file : NULL);
+  ir_function_index_reset();
+  ir_verify_begin_program(program);
+
+  if (gpu_only &&
+      !ir_program_build_gpu_call_graph(program, &graph, &graph_error)) {
+    fprintf(stderr, "GPU optimization eligibility failed: %s\n",
+            graph_error ? graph_error : "invalid device module");
+    free(graph_error);
+    ir_verify_end_program();
+    ir_function_index_reset();
+    return 0;
+  }
+
+  ir_explain_set_program(program);
+  for (size_t i = 0; i < program->function_count; i++) {
+    if (gpu_only && (!graph.reachable || !graph.reachable[i])) continue;
+    IRFunction *function = program->functions[i];
+    ir_set_current_function_context(function);
+    if (!ir_run_fixpoint_stage(function, &g_ir_portable_fixpoint_stage) ||
+        !ir_function_rebuild_cfg(function)) {
+      ok = 0;
+      break;
+    }
+  }
+  ir_explain_set_program(NULL);
+  ir_gpu_call_graph_destroy(&graph);
+  ir_explain_flush();
+  ir_pass_time_report();
+  ir_verify_end_program();
+  ir_function_index_reset();
+  return ok;
+}
+
 int ir_optimize_program_pipeline(IRProgram *program,
                                  const IROptimizeOptions *options) {
   if (!program) {
     return 0;
+  }
+  if (options && options->target_neutral_only) {
+    return ir_optimize_portable_program_pipeline(program, options);
   }
 
   ir_optimize_reset_user_error();

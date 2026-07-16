@@ -31,6 +31,12 @@ typedef struct {
    * call site visible (e.g. allocation-site layout factorization, which
    * rewrites callee bodies to a new pool layout). */
   int whole_program;
+  /* Restrict the pipeline to scalar/control-flow transforms that retain the
+   * shared IR instruction set. This excludes x86 SIMD idiom formation. */
+  int target_neutral_only;
+  /* With target_neutral_only, optimize only kernel-reachable device functions
+   * and validate the shared GPU call graph before transforming them. */
+  int gpu_device_only;
 } IROptimizeOptions;
 
 // Runs optimization passes on the generated IR program.
@@ -63,6 +69,10 @@ void ir_explain_backend_function(const char *function_name,
                                  const char *filename, int ok,
                                  const char *detail, size_t instructions);
 void ir_explain_backend_flush(void);
+/* Finish a report for a non-native backend. The target-neutral optimizer has
+ * already flushed its decisions; this adds an honest backend boundary instead
+ * of pretending the native MIR eligibility report applies to PTX/SPIR-V. */
+void ir_explain_target_flush(const char *target_name);
 /* The -o path the sidecar is derived from; set before compilation. */
 void ir_explain_set_output_path(const char *path);
 /* --explain-json: also write a machine-readable <output-stem>.explain.json. */

@@ -1101,6 +1101,12 @@ static void substitute_types_in_ast(ASTNode *node, char **param_names,
       substitute_types_in_ast(ds->statement, param_names, arg_names, count, ctx);
     break;
   }
+  case AST_GPU_LAUNCH:
+    for (size_t i = 0; i < node->child_count; i++) {
+      substitute_types_in_ast(node->children[i], param_names, arg_names, count,
+                              ctx);
+    }
+    break;
   default:
     break;
   }
@@ -1379,6 +1385,11 @@ static void collect_type_instantiations(ASTNode *node, MonoContext *ctx) {
       collect_type_instantiations(ds->statement, ctx);
     break;
   }
+  case AST_GPU_LAUNCH:
+    for (size_t i = 0; i < node->child_count; i++) {
+      collect_type_instantiations(node->children[i], ctx);
+    }
+    break;
   default:
     break;
   }
@@ -1624,6 +1635,11 @@ static void rewrite_generic_references(ASTNode *node, MonoContext *ctx) {
       rewrite_generic_references(ds->statement, ctx);
     break;
   }
+  case AST_GPU_LAUNCH:
+    for (size_t i = 0; i < node->child_count; i++) {
+      rewrite_generic_references(node->children[i], ctx);
+    }
+    break;
   default:
     break;
   }

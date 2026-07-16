@@ -15,7 +15,7 @@ typedef enum {
   MTLC_ARCH_X86_64 = 0, /* native x86-64 + AVX2 (default host path) */
   MTLC_ARCH_ARM64,      /* AArch64 */
   MTLC_ARCH_PTX,        /* NVIDIA PTX (GPU offload) */
-  MTLC_ARCH_SPIRV       /* SPIR-V, OpenCL 1.2 environment (GPU offload) */
+  MTLC_ARCH_SPIRV       /* SPIR-V, OpenCL 2.0 environment (GPU offload) */
 } MtlcArch;
 
 /* Relocatable object container format. */

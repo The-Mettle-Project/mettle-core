@@ -1,6 +1,37 @@
 // AST->IR lowering: lvalue address, symbol assignment, pointer arithmetic.
 #include "ir_lowering_internal.h"
 
+/* The frontend's nested scopes have been popped by IR lowering time. The IR
+ * declaration stream is therefore the authoritative scoped record for whether
+ * an array-shaped source binding already IS an address-space pointer (rather
+ * than inline host storage whose address must be taken). Scan backwards so a
+ * later shadowing declaration wins. */
+static int ir_symbol_is_address_space_allocation(const IRFunction *function,
+                                                 const char *name) {
+  if (!function || !name) return 0;
+  for (size_t i = function->instruction_count; i-- > 0;) {
+    const IRInstruction *instruction = &function->instructions[i];
+    if ((instruction->op != IR_OP_ADDRESS_SPACE_ALLOC &&
+         instruction->op != IR_OP_DECLARE_LOCAL) ||
+        instruction->dest.kind != IR_OPERAND_SYMBOL ||
+        !instruction->dest.name || strcmp(instruction->dest.name, name) != 0) {
+      continue;
+    }
+    return instruction->op == IR_OP_ADDRESS_SPACE_ALLOC;
+  }
+  return 0;
+}
+
+static int ir_expression_is_address_space_allocation(
+    const IRFunction *function, const ASTNode *expression) {
+  if (!expression || expression->type != AST_IDENTIFIER || !expression->data) {
+    return 0;
+  }
+  const Identifier *identifier = (const Identifier *)expression->data;
+  return identifier->name &&
+         ir_symbol_is_address_space_allocation(function, identifier->name);
+}
+
 int ir_emit_local_declaration(IRLoweringContext *context,
                                      IRFunction *function,
                                      const char *name, const char *type_name,
@@ -635,7 +666,14 @@ int ir_lower_lvalue_address(IRLoweringContext *context,
     IROperand base = ir_operand_none();
     IROperand index = ir_operand_none();
     int lowered_base = 0;
-    if (array_type->kind == TYPE_ARRAY) {
+    int is_address_space_allocation =
+        ir_expression_is_address_space_allocation(function,
+                                                  index_expression->array);
+    if (array_type->kind == TYPE_ARRAY && is_address_space_allocation) {
+      /* Workgroup/private arrays lower to pointer-valued storage bindings. */
+      lowered_base =
+          ir_lower_expression(context, function, index_expression->array, &base);
+    } else if (array_type->kind == TYPE_ARRAY) {
       // For inline arrays (including struct fields), indexing must use the
       // address of the array storage, not a loaded value.
       lowered_base = ir_lower_lvalue_address(context, function,
@@ -654,7 +692,7 @@ int ir_lower_lvalue_address(IRLoweringContext *context,
       return 0;
     }
 
-    if (array_type->kind == TYPE_POINTER &&
+    if (array_type->kind == TYPE_POINTER && !is_address_space_allocation &&
         !ir_emit_null_check(context, function, expression->location, &base)) {
       ir_operand_destroy(&base);
       ir_operand_destroy(&index);

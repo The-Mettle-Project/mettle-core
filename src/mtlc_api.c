@@ -18,6 +18,7 @@
 #include "linker/pe_emitter.h"
 #include "linker/symbol_resolve.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,10 +67,19 @@ struct MtlcContext {
   int whole_program;
   int explain;
   const char *explain_focus_file;
+  char ptx_target[24];
+  int ptx_isa_major;
+  int ptx_isa_minor;
+  int ptx_tensor_tuple_budget;
 };
 
 MtlcContext *mtlc_context_create(void) {
   MtlcContext *ctx = (MtlcContext *)calloc(1, sizeof(MtlcContext));
+  if (ctx) {
+    memcpy(ctx->ptx_target, "sm_121a", sizeof("sm_121a"));
+    ctx->ptx_isa_major = 8;
+    ctx->ptx_isa_minor = 8;
+  }
   return ctx; /* zero-initialized: no opt, no ml, not whole-program */
 }
 
@@ -116,6 +126,67 @@ const char *mtlc_context_explain_focus_file(const MtlcContext *ctx) {
   return ctx ? ctx->explain_focus_file : NULL;
 }
 
+static int ptx_target_name_valid(const char *target) {
+  if (!target) {
+    return 0;
+  }
+  int is_sm = strncmp(target, "sm_", 3) == 0;
+  const unsigned char *p = (const unsigned char *)target;
+  if (is_sm) {
+    p += 3;
+  } else if (strncmp(target, "compute_", 8) == 0) {
+    p += 8;
+  } else {
+    return 0;
+  }
+  if (!isdigit(*p)) {
+    return 0;
+  }
+  while (isdigit(*p)) {
+    p++;
+  }
+  if (is_sm && (*p == 'a' || *p == 'f')) {
+    p++;
+  }
+  return *p == '\0';
+}
+
+int mtlc_context_set_ptx_target(MtlcContext *ctx, const char *target,
+                                int isa_major, int isa_minor) {
+  if (!ctx || !ptx_target_name_valid(target) ||
+      strlen(target) >= sizeof(ctx->ptx_target) || isa_major < 1 ||
+      isa_major > 99 || isa_minor < 0 || isa_minor > 9) {
+    return 0;
+  }
+  memcpy(ctx->ptx_target, target, strlen(target) + 1);
+  ctx->ptx_isa_major = isa_major;
+  ctx->ptx_isa_minor = isa_minor;
+  return 1;
+}
+
+const char *mtlc_context_ptx_target(const MtlcContext *ctx) {
+  return ctx && ctx->ptx_target[0] ? ctx->ptx_target : "sm_121a";
+}
+
+int mtlc_context_ptx_isa_major(const MtlcContext *ctx) {
+  return ctx && ctx->ptx_isa_major ? ctx->ptx_isa_major : 8;
+}
+
+int mtlc_context_ptx_isa_minor(const MtlcContext *ctx) {
+  return ctx ? ctx->ptx_isa_minor : 8;
+}
+
+int mtlc_context_set_ptx_tensor_tuple_budget(MtlcContext *ctx,
+                                             int tuple_budget) {
+  if (!ctx || tuple_budget < 0 || tuple_budget > 4096) return 0;
+  ctx->ptx_tensor_tuple_budget = tuple_budget;
+  return 1;
+}
+
+int mtlc_context_ptx_tensor_tuple_budget(const MtlcContext *ctx) {
+  return ctx ? ctx->ptx_tensor_tuple_budget : 0;
+}
+
 /* ------------------------------------------------------------------- module */
 
 struct MtlcModule {
@@ -149,7 +220,18 @@ void mtlc_module_destroy(MtlcModule *module) {
 
 /* ----------------------------------------------------------------- pipeline */
 
-int mtlc_optimize(MtlcContext *ctx, MtlcModule *module) {
+static int mtlc_module_has_kernel(const MtlcModule *module) {
+  if (!module || !module->ir) return 0;
+  for (size_t i = 0; i < module->ir->function_count; i++) {
+    if (module->ir->functions[i] && module->ir->functions[i]->is_kernel)
+      return 1;
+  }
+  return 0;
+}
+
+static int mtlc_optimize_policy(MtlcContext *ctx, MtlcModule *module,
+                                int target_neutral_only,
+                                int gpu_device_only) {
   if (!module || !module->ir) {
     return 0;
   }
@@ -165,13 +247,38 @@ int mtlc_optimize(MtlcContext *ctx, MtlcModule *module) {
   options.whole_program = ctx ? ctx->whole_program : 0;
   options.explain = ctx ? ctx->explain : 0;
   options.explain_focus_file = ctx ? ctx->explain_focus_file : NULL;
+  options.target_neutral_only = target_neutral_only;
+  options.gpu_device_only = gpu_device_only;
+  if (!gpu_device_only && !ir_program_lower_gpu_launches(module->ir)) return 0;
   return ir_optimize_program(module->ir, &options);
+}
+
+int mtlc_optimize(MtlcContext *ctx, MtlcModule *module) {
+  int gpu = mtlc_module_has_kernel(module);
+  return mtlc_optimize_policy(ctx, module, gpu, gpu);
+}
+
+int mtlc_optimize_for(MtlcContext *ctx, MtlcModule *module, MtlcArch arch) {
+  switch (arch) {
+  case MTLC_ARCH_X86_64:
+    return mtlc_optimize_policy(ctx, module, 0, 0);
+  case MTLC_ARCH_ARM64:
+    return mtlc_optimize_policy(ctx, module, 1, 0);
+  case MTLC_ARCH_PTX:
+  case MTLC_ARCH_SPIRV:
+    return mtlc_optimize_policy(ctx, module, 1, 1);
+  default:
+    return 0;
+  }
 }
 
 int mtlc_apply_ml_opt(MtlcContext *ctx, MtlcModule *module,
                       MtlcMlOptStats *stats) {
   (void)ctx; /* the caller decides when to run the ML pass */
   if (!module || !module->ir) {
+    return 0;
+  }
+  if (!ir_program_lower_gpu_launches(module->ir)) {
     return 0;
   }
   MLOptStats s = {0};
@@ -196,6 +303,21 @@ int mtlc_emit_object(MtlcContext *ctx, MtlcModule *module, const char *path) {
   if (!module || !module->ir || !path) {
     return 0;
   }
+  if (!ir_program_lower_gpu_launches(module->ir)) {
+    fprintf(stderr, "mtlc: GPU launch host lowering failed\n");
+    return 0;
+  }
+#if defined(__aarch64__) && defined(__linux__)
+  {
+    char error[512] = {0};
+    int ok = arm64_ir_write_object(module->ir, path, error, sizeof(error));
+    if (!ok) {
+      fprintf(stderr, "mtlc: AArch64 object emission failed: %s\n",
+              error[0] ? error : "unknown error");
+    }
+    return ok;
+  }
+#else
   CodeGenerator *gen = code_generator_create();
   if (!gen) {
     return 0;
@@ -216,6 +338,7 @@ int mtlc_emit_object(MtlcContext *ctx, MtlcModule *module, const char *path) {
   }
   code_generator_destroy(gen);
   return ok;
+#endif
 }
 
 int mtlc_emit(MtlcContext *ctx, MtlcModule *module, MtlcArch arch,
@@ -228,22 +351,17 @@ int mtlc_emit(MtlcContext *ctx, MtlcModule *module, MtlcArch arch,
     return mtlc_emit_object(ctx, module, path);
 
   case MTLC_ARCH_ARM64: {
-    /* Self-contained static AArch64 ELF executable: _start calls main() and
-     * exits with its return value (the driver's --emit-arm64 product). */
-    Arm64Emit ae;
-    arm64_emit_init(&ae);
-    int ok = arm64_ir_encode_program(&ae, module->ir, "main") &&
-             arm64_emit_finalize(&ae);
-    if (ok) {
-      ok = arm64_write_elf(path, ae.code.data, ae.code.len);
-      if (!ok) {
-        fprintf(stderr, "mtlc: could not write AArch64 ELF '%s'\n", path);
-      }
-    } else {
-      fprintf(stderr, "mtlc: AArch64 lowering failed (an op outside the "
-                      "supported scalar subset, or an unresolved call)\n");
+    /* Cross-host AArch64 relocatable object. The CLI's explicit --emit-arm64
+     * legacy smoke target remains a self-contained executable. */
+    if (!ir_program_lower_gpu_launches(module->ir)) {
+      fprintf(stderr, "mtlc: GPU launch host lowering failed\n");
+      return 0;
     }
-    arm64_emit_free(&ae);
+    char error[512] = {0};
+    int ok = arm64_ir_write_object(module->ir, path, error, sizeof(error));
+    if (!ok)
+      fprintf(stderr, "mtlc: AArch64 object emission failed: %s\n",
+              error[0] ? error : "unknown error");
     return ok;
   }
 
@@ -254,7 +372,11 @@ int mtlc_emit(MtlcContext *ctx, MtlcModule *module, MtlcArch arch,
       return 0;
     }
     char *err = NULL;
-    int ok = ptx_emit_program(module->ir, NULL, out, &err);
+    PtxEmitOptions ptx_options = {
+        mtlc_context_ptx_target(ctx), mtlc_context_ptx_isa_major(ctx),
+        mtlc_context_ptx_isa_minor(ctx),
+        mtlc_context_ptx_tensor_tuple_budget(ctx)};
+    int ok = ptx_emit_program(module->ir, NULL, out, &ptx_options, &err);
     fclose(out);
     if (!ok) {
       fprintf(stderr, "mtlc: PTX emission failed: %s\n",

@@ -157,11 +157,13 @@ base-pointer + offset arithmetic today); wrapping them is additive.
 | `MtlcArch` | Product |
 |---|---|
 | `MTLC_ARCH_X86_64` | host-format relocatable object (or `mtlc_build_executable` for a linked binary) |
-| `MTLC_ARCH_ARM64` | self-contained static AArch64 ELF executable |
+| `MTLC_ARCH_ARM64` | AArch64 ELF64 relocatable object (AAPCS64) |
 | `MTLC_ARCH_PTX` | NVIDIA PTX module (text) |
-| `MTLC_ARCH_SPIRV` | SPIR-V binary module (OpenCL 1.2) |
+| `MTLC_ARCH_SPIRV` | SPIR-V binary module (OpenCL 2.0) |
 
-The ARM64/PTX/SPIR-V paths consume the unoptimized IR shape, so emit before
-calling `mtlc_optimize` on that module.
+Every target accepts unoptimized IR. For optimized output, call
+`mtlc_optimize_for(ctx, module, arch)` with the same consumer architecture;
+ARM64/PTX/SPIR-V receive only target-neutral transformations and never the
+x86-only full pipeline.
 
 See also: [compilation pipeline](compilation.md), [GPU offload](gpu.md).

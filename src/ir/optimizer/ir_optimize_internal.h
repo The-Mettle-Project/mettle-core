@@ -243,6 +243,8 @@ typedef struct {
 #define IR_OPT_PASS_LIST(X)                                                   \
   X(REDUCTION_UNROLL, "reduction_unroll")                                    \
   X(COPY_AND_CONSTANT_PROPAGATION, "copy_and_constant_propagation")           \
+  X(FUSE_TENSOR_MMA_CHAINS, "fuse_tensor_mma_chains")                        \
+  X(PROMOTE_GPU_ASYNC_STAGING, "promote_gpu_async_staging")                  \
   X(FUSE_ROTATE_ADD, "fuse_rotate_add")                                      \
   X(STRENGTH_REDUCE_ROTATE_LOOPS, "strength_reduce_rotate_loops")            \
   X(UNROLL_SMALL_CONST_BOUND_LOOPS, "unroll_small_const_bound_loops")         \
@@ -373,6 +375,8 @@ int ir_function_symbol_is_inlined_param(const IRFunction *function,
 int ir_function_symbol_is_parameter(const IRFunction *function,
                                            const char *symbol_name);
 int ir_fuse_popcount_buffer_loop_pass(IRFunction *function, int *changed);
+int ir_fuse_tensor_mma_chains_pass(IRFunction *function, int *changed);
+int ir_promote_gpu_async_staging_pass(IRFunction *function, int *changed);
 int ir_fuse_rotate_add_pass(IRFunction *function, int *changed);
 int ir_fuse_while_loop_to_insn(IRFunction *function, size_t header_index,
                                       size_t jump_index, IRInstruction *fused,

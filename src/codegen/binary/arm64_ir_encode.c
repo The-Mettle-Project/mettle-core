@@ -1,4 +1,6 @@
 #include "codegen/binary/arm64_ir.h"
+#include "codegen/binary_emitter.h"
+#include "codegen/binary_emitter_internal.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +19,14 @@
 #define R_RES ARM64_X11
 #define R_AUX ARM64_X12
 
+typedef struct {
+  BinaryEmitter *emitter;
+  const IRProgram *program;
+  size_t text_section;
+  size_t rodata_section;
+  unsigned string_id;
+} Arm64ObjectContext;
+
 /* Stack-slot map: each distinct name gets a byte offset into the frame. Scalars
  * and pointers take 8 bytes; an array local takes count*elem_size (8-aligned)
  * so &array + i*elem_size addresses its elements. */
@@ -26,7 +36,94 @@ typedef struct {
   int count;
   int cap;
   int frame; /* running total bytes */
+  Arm64ObjectContext *object;
 } SlotMap;
+
+static const IRModuleSymbol *module_variable(const SlotMap *slots,
+                                             const char *name) {
+  if (!slots || !slots->object || !name) return NULL;
+  const IRModuleSymbol *symbol =
+      ir_program_lookup_symbol(slots->object->program, name);
+  return symbol && symbol->kind == IR_MODSYM_VARIABLE ? symbol : NULL;
+}
+
+static const char *module_link_name(const IRModuleSymbol *symbol) {
+  return symbol && symbol->link_name && symbol->link_name[0]
+             ? symbol->link_name
+             : (symbol ? symbol->name : NULL);
+}
+
+static int object_add_relocation(Arm64Emit *e, Arm64ObjectContext *object,
+                                 size_t offset, BinaryRelocationKind kind,
+                                 const char *symbol) {
+  if (!object || !symbol ||
+      !binary_emitter_add_relocation(object->emitter, object->text_section,
+                                     offset, kind, symbol, 0)) {
+    e->error = 1;
+    return 0;
+  }
+  return 1;
+}
+
+/* rd = &symbol using the ELF small position-independent code model. The two
+ * zero-immediate instructions are completed by AAELF64 page/lo12 relocations. */
+static void emit_symbol_address(Arm64Emit *e, Arm64ObjectContext *object,
+                                Arm64Reg rd, const char *symbol) {
+  size_t at = arm64_here(e);
+  arm64_emit_word(e, 0x90000000u | (uint32_t)rd); /* adrp rd, symbol */
+  if (!object_add_relocation(e, object, at,
+                             BINARY_RELOCATION_ARM64_ADR_PREL_PG_HI21,
+                             symbol)) {
+    return;
+  }
+  at = arm64_here(e);
+  arm64_emit_word(e, arm64_add_imm(1, rd, rd, 0, 0));
+  object_add_relocation(e, object, at,
+                        BINARY_RELOCATION_ARM64_ADD_ABS_LO12_NC, symbol);
+}
+
+static int module_type_size(const MtlcType *type) {
+  size_t size = mtlc_type_size(type);
+  return size == 1 || size == 2 || size == 4 || size == 8 ? (int)size : 8;
+}
+
+static int module_type_signed(const MtlcType *type) {
+  return type && (type->kind == MTLC_TYPE_INT8 ||
+                  type->kind == MTLC_TYPE_INT16 ||
+                  type->kind == MTLC_TYPE_INT32 ||
+                  type->kind == MTLC_TYPE_INT64);
+}
+
+static void emit_load_sized(Arm64Emit *e, Arm64Reg dest, Arm64Reg address,
+                            int size, int sign_extend) {
+  switch (size) {
+  case 8:
+    arm64_emit_word(e, arm64_ldr_imm(1, dest, address, 0));
+    break;
+  case 4:
+    arm64_emit_word(e, arm64_ldr_imm(0, dest, address, 0));
+    if (sign_extend) arm64_emit_word(e, arm64_sxtw(dest, dest));
+    break;
+  case 2:
+    arm64_emit_word(e, arm64_ldrh_imm(dest, address, 0));
+    if (sign_extend) arm64_emit_word(e, arm64_sxth(dest, dest));
+    break;
+  default:
+    arm64_emit_word(e, arm64_ldrb_imm(dest, address, 0));
+    if (sign_extend) arm64_emit_word(e, arm64_sxtb(dest, dest));
+    break;
+  }
+}
+
+static void emit_store_sized(Arm64Emit *e, Arm64Reg source,
+                             Arm64Reg address, int size) {
+  switch (size) {
+  case 8: arm64_emit_word(e, arm64_str_imm(1, source, address, 0)); break;
+  case 4: arm64_emit_word(e, arm64_str_imm(0, source, address, 0)); break;
+  case 2: arm64_emit_word(e, arm64_strh_imm(source, address, 0)); break;
+  default: arm64_emit_word(e, arm64_strb_imm(source, address, 0)); break;
+  }
+}
 
 /* Byte size of an array element by its type name. */
 static int type_elem_size(const char *t) {
@@ -87,6 +184,20 @@ static int slot_alloc(SlotMap *s, const char *name, int size_bytes) {
 /* Byte offset of a name's slot (default 8-byte scalar if not seen yet). */
 static int slot_off(SlotMap *s, const char *name) {
   return slot_alloc(s, name, 8);
+}
+
+/* Lookup-only variant: byte offset of a name's slot, or -1 if the name has no
+ * slot. Parameters and DECLARE_LOCALs are slot-allocated before the body is
+ * lowered, so a hit here means the name is function-local and must shadow any
+ * module variable of the same name (matching the x86 backend's locals-first
+ * resolution order). */
+static int slot_find(const SlotMap *s, const char *name) {
+  for (int i = 0; i < s->count; i++) {
+    if (s->names[i] == name || strcmp(s->names[i], name) == 0) {
+      return s->offs[i];
+    }
+  }
+  return -1;
 }
 
 /* IEEE-754 bit pattern of a FLOAT operand at its declared width. */
@@ -182,7 +293,7 @@ static int operand_is_float(const StrSet *fs, const IROperand *op) {
 }
 
 static int prog_fn_index(const IRProgram *prog, const char *name) {
-  if (!name) return -1;
+  if (!prog || !name) return -1;
   for (size_t i = 0; i < prog->function_count; i++) {
     if (strcmp(prog->functions[i]->name, name) == 0) return (int)i;
   }
@@ -266,7 +377,18 @@ static Arm64Reg load_into(Arm64Emit *e, SlotMap *s, const IROperand *op,
     return dest;
   case IR_OPERAND_TEMP:
   case IR_OPERAND_SYMBOL: {
-    int off = slot_off(s, op->name);
+    int off = slot_find(s, op->name);
+    const IRModuleSymbol *global =
+        off < 0 && op->kind == IR_OPERAND_SYMBOL ? module_variable(s, op->name)
+                                                 : NULL;
+    if (global) {
+      const char *link_name = module_link_name(global);
+      emit_symbol_address(e, s->object, ARM64_X16, link_name);
+      emit_load_sized(e, dest, ARM64_X16, module_type_size(global->type),
+                      module_type_signed(global->type));
+      return dest;
+    }
+    if (off < 0) off = slot_off(s, op->name);
     if (off < 0) {
       e->error = 1;
       return dest;
@@ -282,7 +404,17 @@ static Arm64Reg load_into(Arm64Emit *e, SlotMap *s, const IROperand *op,
 
 static void store_dest(Arm64Emit *e, SlotMap *s, const IROperand *dst,
                        Arm64Reg src) {
-  int off = slot_off(s, dst->name);
+  int off = dst && dst->name ? slot_find(s, dst->name) : -1;
+  const IRModuleSymbol *global =
+      off < 0 && dst && dst->kind == IR_OPERAND_SYMBOL
+          ? module_variable(s, dst->name)
+          : NULL;
+  if (global) {
+    emit_symbol_address(e, s->object, ARM64_X16, module_link_name(global));
+    emit_store_sized(e, src, ARM64_X16, module_type_size(global->type));
+    return;
+  }
+  if (off < 0) off = slot_off(s, dst->name);
   if (off < 0) {
     e->error = 1;
     return;
@@ -397,15 +529,104 @@ static void lower_unary(Arm64Emit *e, SlotMap *s, const IRInstruction *in) {
   store_dest(e, s, &in->dest, R_RES);
 }
 
+static const IRModuleSymbol *module_function(const IRProgram *program,
+                                             const char *name) {
+  if (!program || !name) return NULL;
+  const IRModuleSymbol *symbol = ir_program_lookup_symbol(program, name);
+  return symbol && symbol->kind == IR_MODSYM_FUNCTION ? symbol : NULL;
+}
+
+static int call_arg_is_float(const IRProgram *program,
+                             const IRInstruction *call, size_t index,
+                             const StrSet *floats) {
+  const IRModuleSymbol *callee = module_function(program, call->text);
+  if (callee && index < callee->param_count && callee->param_types &&
+      callee->param_types[index]) {
+    return mtlc_type_is_float(callee->param_types[index]);
+  }
+  return operand_is_float(floats, &call->arguments[index]);
+}
+
+static int call_arg_float_bits(const IRProgram *program,
+                               const IRInstruction *call, size_t index) {
+  const IRModuleSymbol *callee = module_function(program, call->text);
+  if (callee && index < callee->param_count && callee->param_types &&
+      callee->param_types[index]) {
+    return callee->param_types[index]->kind == MTLC_TYPE_FLOAT32 ? 32 : 64;
+  }
+  return call->arguments[index].float_bits == 32 ? 32 : 64;
+}
+
+static int call_returns_float(const IRProgram *program,
+                              const IRInstruction *call, const int *retf) {
+  const IRModuleSymbol *callee = module_function(program, call->text);
+  if (callee && callee->return_type) {
+    return mtlc_type_is_float(callee->return_type);
+  }
+  int index = retf ? prog_fn_index(program, call->text) : -1;
+  return index >= 0 && retf[index];
+}
+
+static int call_return_float_bits(const IRProgram *program,
+                                  const IRInstruction *call) {
+  const IRModuleSymbol *callee = module_function(program, call->text);
+  if (callee && callee->return_type) {
+    return callee->return_type->kind == MTLC_TYPE_FLOAT32 ? 32 : 64;
+  }
+  return call->dest.float_bits == 32 ? 32 : 64;
+}
+
+static int max_outgoing_stack(Arm64Emit *e, const IRFunction *fn,
+                              const IRProgram *program,
+                              const StrSet *floats) {
+  int maximum = 0;
+  for (size_t i = 0; i < fn->instruction_count; i++) {
+    const IRInstruction *call = &fn->instructions[i];
+    if (call->op != IR_OP_CALL || !call->text ||
+        strcmp(call->text, "cstr") == 0 || call->argument_count == 0) {
+      continue;
+    }
+    if (call->argument_count > (size_t)INT32_MAX) {
+      e->error = 1;
+      return 0;
+    }
+    int count = (int)call->argument_count;
+    int *is_float = malloc((size_t)count * sizeof(*is_float));
+    Arm64ArgLocation *locations =
+        malloc((size_t)count * sizeof(*locations));
+    if (!is_float || !locations) {
+      free(is_float);
+      free(locations);
+      e->error = 1;
+      return 0;
+    }
+    for (int k = 0; k < count; k++) {
+      is_float[k] = call_arg_is_float(program, call, (size_t)k, floats);
+    }
+    int bytes = 0;
+    if (!arm64_compute_arg_layout(is_float, count, locations, &bytes)) {
+      e->error = 1;
+    }
+    if (bytes > maximum) maximum = bytes;
+    free(is_float);
+    free(locations);
+    if (e->error) return 0;
+  }
+  return (maximum + 15) & ~15;
+}
+
 /* Lower one function body. `fns` maps callee names to entry labels so IR_OP_CALL
  * can resolve a cross-function bl; `prog`/`retf` drive the float ABI (which
  * callees return floats). All may be NULL for the single-function path. */
 static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
-                           const IRProgram *prog, const int *retf) {
+                           const IRProgram *prog, const int *retf,
+                           Arm64ObjectContext *object) {
   SlotMap slots = {0};
   LblMap labels = {0};
   StrSet fs = {0};
   build_float_set(fn, prog, retf, &fs);
+  slots.object = object;
+  slots.frame = max_outgoing_stack(e, fn, prog, &fs);
 
   /* Slot allocation order: parameters first (so x0../v0.. home to known
    * offsets), then declared locals at their real sizes (arrays!), then any
@@ -424,13 +645,17 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
     const IRInstruction *in = &fn->instructions[i];
     const IROperand *ops[3] = {&in->dest, &in->lhs, &in->rhs};
     for (int k = 0; k < 3; k++) {
-      if (ops[k]->kind == IR_OPERAND_TEMP || ops[k]->kind == IR_OPERAND_SYMBOL) {
+      if (ops[k]->kind == IR_OPERAND_TEMP ||
+          (ops[k]->kind == IR_OPERAND_SYMBOL &&
+           !module_variable(&slots, ops[k]->name))) {
         slot_off(&slots, ops[k]->name);
       }
     }
     for (size_t k = 0; k < in->argument_count; k++) {
       const IROperand *a = &in->arguments[k];
-      if (a->kind == IR_OPERAND_TEMP || a->kind == IR_OPERAND_SYMBOL) {
+      if (a->kind == IR_OPERAND_TEMP ||
+          (a->kind == IR_OPERAND_SYMBOL &&
+           !module_variable(&slots, a->name))) {
         slot_off(&slots, a->name);
       }
     }
@@ -440,28 +665,48 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
   if (e->error || !arm64_emit_prologue(e, frame, NULL, 0)) {
     goto done;
   }
-  /* Home incoming parameters. GP and FP arguments are counted independently
-   * (AAPCS64): a float param arrives in v<fp>, an integer in x<gp>. */
-  {
-    int gp = 0, fp = 0;
-    for (size_t i = 0; i < fn->parameter_count; i++) {
-      const char *ty = fn->parameter_types ? fn->parameter_types[i] : NULL;
-      int isf = ty && strstr(ty, "float") != NULL;
+  /* Home incoming parameters using the same AAPCS64 classifier as calls.
+   * Stack arguments begin at caller SP, which is [x29,#16] after our saved
+   * FP/LR pair and remains stable regardless of the local frame size. */
+  if (fn->parameter_count > 0) {
+    int count = (int)fn->parameter_count;
+    int *is_float = malloc((size_t)count * sizeof(*is_float));
+    Arm64ArgLocation *locations =
+        malloc((size_t)count * sizeof(*locations));
+    if (!is_float || !locations) {
+      free(is_float);
+      free(locations);
+      e->error = 1;
+      goto done;
+    }
+    for (int i = 0; i < count; i++) {
+      const char *type = fn->parameter_types ? fn->parameter_types[i] : NULL;
+      is_float[i] = type && strstr(type, "float") != NULL;
+    }
+    if (!arm64_compute_arg_layout(is_float, count, locations, NULL)) {
+      e->error = 1;
+    }
+    for (int i = 0; i < count && !e->error; i++) {
       int off = slot_off(&slots, fn->parameter_names[i]);
-      if (isf) {
-        if (fp < 8) {
-          int d = !strstr(ty, "32");
-          arm64_emit_word(e, arm64_str_fp(d, fp, ARM64_SP, off));
-        }
-        fp++;
+      Arm64ArgLocation location = locations[i];
+      if (location.kind == ARM64_ARG_IN_VEC_REGISTER) {
+        const char *type =
+            fn->parameter_types ? fn->parameter_types[i] : NULL;
+        int is_double = !type || !strstr(type, "32");
+        arm64_emit_word(e, arm64_str_fp(is_double, (int)location.reg,
+                                        ARM64_SP, off));
+      } else if (location.kind == ARM64_ARG_IN_GP_REGISTER) {
+        arm64_emit_word(e,
+                        arm64_str_imm(1, location.reg, ARM64_SP, off));
       } else {
-        if (gp < 8) {
-          arm64_emit_word(e, arm64_str_imm(1, (Arm64Reg)(ARM64_X0 + gp),
-                                           ARM64_SP, off));
-        }
-        gp++;
+        arm64_emit_word(e, arm64_ldr_imm(1, R_LHS, ARM64_X29,
+                                         16 + location.stack_offset));
+        arm64_emit_word(e, arm64_str_imm(1, R_LHS, ARM64_SP, off));
       }
     }
+    free(is_float);
+    free(locations);
+    if (e->error) goto done;
   }
 
   for (size_t i = 0; i < fn->instruction_count && !e->error; i++) {
@@ -522,31 +767,23 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
       break;
     }
     case IR_OP_ADDRESS_OF: {
-      emit_lea_local(e, R_RES, slot_off(&slots, in->lhs.name));
+      const IRModuleSymbol *global =
+          slot_find(&slots, in->lhs.name) < 0
+              ? module_variable(&slots, in->lhs.name)
+              : NULL;
+      if (global) {
+        emit_symbol_address(e, object, R_RES, module_link_name(global));
+      } else {
+        emit_lea_local(e, R_RES, slot_off(&slots, in->lhs.name));
+      }
       store_dest(e, &slots, &in->dest, R_RES);
       break;
     }
     case IR_OP_LOAD: {
       int size = in->rhs.kind == IR_OPERAND_INT ? (int)in->rhs.int_value : 8;
       Arm64Reg addr = load_into(e, &slots, &in->lhs, R_LHS);
-      int sx = !in->is_unsigned && !in->is_float;
-      switch (size) {
-      case 8:
-        arm64_emit_word(e, arm64_ldr_imm(1, R_RES, addr, 0));
-        break;
-      case 4:
-        arm64_emit_word(e, arm64_ldr_imm(0, R_RES, addr, 0));
-        if (sx) arm64_emit_word(e, arm64_sxtw(R_RES, R_RES));
-        break;
-      case 2:
-        arm64_emit_word(e, arm64_ldrh_imm(R_RES, addr, 0));
-        if (sx) arm64_emit_word(e, arm64_sxth(R_RES, R_RES));
-        break;
-      default:
-        arm64_emit_word(e, arm64_ldrb_imm(R_RES, addr, 0));
-        if (sx) arm64_emit_word(e, arm64_sxtb(R_RES, R_RES));
-        break;
-      }
+      emit_load_sized(e, R_RES, addr, size,
+                      !in->is_unsigned && !in->is_float);
       store_dest(e, &slots, &in->dest, R_RES);
       break;
     }
@@ -554,12 +791,7 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
       int size = in->rhs.kind == IR_OPERAND_INT ? (int)in->rhs.int_value : 8;
       Arm64Reg addr = load_into(e, &slots, &in->dest, R_LHS);
       Arm64Reg val = load_into(e, &slots, &in->lhs, R_RHS);
-      switch (size) {
-      case 8: arm64_emit_word(e, arm64_str_imm(1, val, addr, 0)); break;
-      case 4: arm64_emit_word(e, arm64_str_imm(0, val, addr, 0)); break;
-      case 2: arm64_emit_word(e, arm64_strh_imm(val, addr, 0)); break;
-      default: arm64_emit_word(e, arm64_strb_imm(val, addr, 0)); break;
-      }
+      emit_store_sized(e, val, addr, size);
       break;
     }
     case IR_OP_BINARY:
@@ -579,49 +811,105 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
           in->arguments[0].kind == IR_OPERAND_STRING &&
           in->arguments[0].name) {
         const char *str = in->arguments[0].name;
-        int past = arm64_new_label(e);
-        arm64_emit_b(e, past);
-        size_t soff = arm64_here(e);
-        arm64_emit_bytes(e, str, strlen(str) + 1);
-        arm64_bind_label(e, past);
-        emit_imm(e, R_RES, (uint64_t)ELF_BASE + ELF_HDRS + soff);
+        if (object) {
+          char symbol[64];
+          size_t offset = 0;
+          snprintf(symbol, sizeof(symbol), ".Lmtlc.str.%u",
+                   object->string_id++);
+          if (!binary_emitter_append_bytes(object->emitter,
+                                           object->rodata_section, str,
+                                           strlen(str) + 1, &offset) ||
+              !binary_emitter_define_symbol(
+                  object->emitter, symbol, BINARY_SYMBOL_LOCAL,
+                  object->rodata_section, offset, strlen(str) + 1)) {
+            e->error = 1;
+            break;
+          }
+          emit_symbol_address(e, object, R_RES, symbol);
+        } else {
+          int past = arm64_new_label(e);
+          arm64_emit_b(e, past);
+          size_t soff = arm64_here(e);
+          arm64_emit_bytes(e, str, strlen(str) + 1);
+          arm64_bind_label(e, past);
+          emit_imm(e, R_RES, (uint64_t)ELF_BASE + ELF_HDRS + soff);
+        }
         if (in->dest.kind == IR_OPERAND_TEMP ||
             in->dest.kind == IR_OPERAND_SYMBOL) {
           store_dest(e, &slots, &in->dest, R_RES);
         }
         break;
       }
-      /* Marshal args: integers into x0..x7, floats into v0..v7 (counted
-       * independently). All values live on the stack, so nothing is clobbered
-       * across the bl. */
-      {
-        int gp = 0, fp = 0;
-        for (size_t k = 0; k < in->argument_count; k++) {
+      /* Marshal through one AAPCS64 layout. GP and FP registers are independent
+       * banks; overflow values occupy the frame's reserved outgoing-call area
+       * at [sp,#stack_offset]. This is required for cuLaunchKernel's 11-argument
+       * C ABI, not merely for synthetic many-argument tests. */
+      if (in->argument_count > 0) {
+        int count = (int)in->argument_count;
+        int *is_float = malloc((size_t)count * sizeof(*is_float));
+        Arm64ArgLocation *locations =
+            malloc((size_t)count * sizeof(*locations));
+        if (!is_float || !locations) {
+          free(is_float);
+          free(locations);
+          e->error = 1;
+          break;
+        }
+        for (int k = 0; k < count; k++) {
+          is_float[k] = call_arg_is_float(prog, in, (size_t)k, &fs);
+        }
+        if (!arm64_compute_arg_layout(is_float, count, locations, NULL)) {
+          e->error = 1;
+        }
+        for (int k = 0; k < count && !e->error; k++) {
           const IROperand *arg = &in->arguments[k];
-          int af = operand_is_float(&fs, arg);
-          if (af) {
-            if (fp < 8) {
-              int d = arg->float_bits != 32;
-              arm64_emit_word(e, arm64_fmov_gp(d, fp,
-                                               load_into(e, &slots, arg,
-                                                         R_LHS)));
-            }
-            fp++;
+          Arm64ArgLocation location = locations[k];
+          if (location.kind == ARM64_ARG_IN_VEC_REGISTER) {
+            int is_double =
+                call_arg_float_bits(prog, in, (size_t)k) != 32;
+            arm64_emit_word(
+                e, arm64_fmov_gp(is_double, (int)location.reg,
+                                 load_into(e, &slots, arg, R_LHS)));
+          } else if (location.kind == ARM64_ARG_IN_GP_REGISTER) {
+            load_into(e, &slots, arg, location.reg);
           } else {
-            if (gp < 8) {
-              load_into(e, &slots, arg, (Arm64Reg)(ARM64_X0 + gp));
-            }
-            gp++;
+            load_into(e, &slots, arg, R_LHS);
+            arm64_emit_word(e, arm64_str_imm(1, R_LHS, ARM64_SP,
+                                             location.stack_offset));
           }
         }
+        free(is_float);
+        free(locations);
+        if (e->error) break;
       }
-      arm64_emit_bl(e, label_for(e, fns, in->text));
+
+      if (prog_fn_index(prog, in->text) >= 0) {
+        arm64_emit_bl(e, label_for(e, fns, in->text));
+      } else if (object) {
+        const IRModuleSymbol *callee = module_function(prog, in->text);
+        const char *link_name = callee ? module_link_name(callee) : in->text;
+        if (!binary_emitter_find_symbol(object->emitter, link_name) &&
+            !binary_emitter_declare_external(object->emitter, link_name)) {
+          e->error = 1;
+          break;
+        }
+        size_t call_offset = arm64_here(e);
+        arm64_emit_word(e, arm64_bl(0));
+        if (!object_add_relocation(e, object, call_offset,
+                                   BINARY_RELOCATION_ARM64_CALL26,
+                                   link_name)) {
+          break;
+        }
+      } else {
+        e->error = 1;
+        break;
+      }
       if (in->dest.kind == IR_OPERAND_TEMP ||
           in->dest.kind == IR_OPERAND_SYMBOL) {
-        int ci = (prog && retf) ? prog_fn_index(prog, in->text) : -1;
-        int resf = (ci >= 0 && retf[ci]) || set_has(&fs, in->dest.name);
+        int resf = call_returns_float(prog, in, retf) ||
+                   set_has(&fs, in->dest.name);
         if (resf) { /* float result arrives in d0/s0 */
-          int d = in->dest.float_bits != 32;
+          int d = call_return_float_bits(prog, in) != 32;
           arm64_emit_word(e, arm64_fmov_to_gp(d, R_RES, 0));
           store_dest(e, &slots, &in->dest, R_RES);
         } else {
@@ -633,7 +921,10 @@ static int encode_function(Arm64Emit *e, const IRFunction *fn, LblMap *fns,
     case IR_OP_RETURN:
       if (in->lhs.kind != IR_OPERAND_NONE) {
         if (operand_is_float(&fs, &in->lhs)) { /* float result goes in d0/s0 */
-          int d = in->lhs.float_bits != 32;
+          const IRModuleSymbol *current = module_function(prog, fn->name);
+          int d = current && current->return_type
+                      ? current->return_type->kind != MTLC_TYPE_FLOAT32
+                      : in->lhs.float_bits != 32;
           arm64_emit_word(e, arm64_fmov_gp(d, 0, load_into(e, &slots, &in->lhs,
                                                            R_LHS)));
         } else {
@@ -658,7 +949,7 @@ done:
 }
 
 int arm64_ir_encode_function(Arm64Emit *e, const IRFunction *fn) {
-  return encode_function(e, fn, NULL, NULL, NULL);
+  return encode_function(e, fn, NULL, NULL, NULL, NULL);
 }
 
 /* I/O intrinsics we provide as hand-written AArch64 stubs (a direct write(2)
@@ -872,7 +1163,7 @@ int arm64_ir_encode_program(Arm64Emit *e, const IRProgram *prog,
       } else {
         emit_int_print(e, with_newline);
       }
-    } else if (!encode_function(e, fn, &fns, prog, retf)) {
+    } else if (!encode_function(e, fn, &fns, prog, retf, NULL)) {
       break;
     }
   }
@@ -883,6 +1174,235 @@ int arm64_ir_encode_program(Arm64Emit *e, const IRProgram *prog,
   free(fns.names);
   free(fns.ids);
   return e->error ? 0 : 1;
+}
+
+static void arm64_object_error(char *error, size_t capacity,
+                               const char *message) {
+  if (error && capacity > 0) {
+    snprintf(error, capacity, "%s", message ? message : "unknown error");
+  }
+}
+
+static int arm64_object_emit_global(Arm64ObjectContext *object,
+                                    const IRModuleSymbol *symbol,
+                                    size_t data_section,
+                                    size_t bss_section) {
+  BinaryEmitter *emitter = object->emitter;
+  const char *link_name = module_link_name(symbol);
+  if (!link_name || !link_name[0]) return 0;
+  if (symbol->is_extern) {
+    return binary_emitter_declare_external(emitter, link_name);
+  }
+  if (!symbol->type || symbol->has_unfoldable_initializer) return 0;
+
+  /* Mettle strings are a {chars,length} pair in host memory. */
+  if (symbol->type->kind == MTLC_TYPE_STRING) {
+    size_t value_offset = 0;
+    if (!binary_emitter_align_section(emitter, data_section, 8, 0) ||
+        !binary_emitter_append_zeros(emitter, data_section, 16,
+                                     &value_offset)) {
+      return 0;
+    }
+    if (symbol->has_initializer && symbol->init_string) {
+      char chars_symbol[64];
+      size_t chars_offset = 0;
+      size_t length = strlen(symbol->init_string);
+      snprintf(chars_symbol, sizeof(chars_symbol), ".Lmtlc.gstr.%u",
+               object->string_id++);
+      if (!binary_emitter_append_bytes(
+              emitter, object->rodata_section, symbol->init_string,
+              length + 1, &chars_offset) ||
+          !binary_emitter_define_symbol(
+              emitter, chars_symbol, BINARY_SYMBOL_LOCAL,
+              object->rodata_section, chars_offset, length + 1)) {
+        return 0;
+      }
+      BinarySection *data =
+          binary_emitter_get_section(emitter, data_section);
+      uint64_t encoded_length = (uint64_t)length;
+      if (!data || value_offset + 16 > data->size) return 0;
+      memcpy(data->data + value_offset + 8, &encoded_length, 8);
+      if (!binary_emitter_add_relocation(
+              emitter, data_section, value_offset, BINARY_RELOCATION_ADDR64,
+              chars_symbol, 0)) {
+        return 0;
+      }
+    }
+    return binary_emitter_define_symbol(
+        emitter, link_name, BINARY_SYMBOL_GLOBAL, data_section, value_offset,
+        16);
+  }
+
+  size_t size = mtlc_type_size(symbol->type);
+  if (size == 0 || size > 8) return 0;
+  size_t alignment = symbol->type->alignment ? symbol->type->alignment : size;
+  size_t section = symbol->has_initializer ? data_section : bss_section;
+  size_t offset = 0;
+  if (!binary_emitter_align_section(emitter, section, alignment, 0)) return 0;
+  if (symbol->has_initializer) {
+    unsigned char bytes[8] = {0};
+    if (symbol->init_is_float) {
+      double value = 0.0;
+      memcpy(&value, &symbol->init_bits, 8);
+      if (symbol->type->kind == MTLC_TYPE_FLOAT32) {
+        float narrowed = (float)value;
+        memcpy(bytes, &narrowed, 4);
+      } else if (symbol->type->kind == MTLC_TYPE_FLOAT64) {
+        memcpy(bytes, &value, 8);
+      } else {
+        return 0;
+      }
+    } else {
+      uint64_t bits = (uint64_t)symbol->init_bits;
+      memcpy(bytes, &bits, size);
+    }
+    if (!binary_emitter_append_bytes(emitter, section, bytes, size, &offset))
+      return 0;
+  } else if (!binary_emitter_append_zeros(emitter, section, size, &offset)) {
+    return 0;
+  }
+  return binary_emitter_define_symbol(emitter, link_name,
+                                      BINARY_SYMBOL_GLOBAL, section, offset,
+                                      size);
+}
+
+int arm64_ir_write_object(const IRProgram *prog, const char *path, char *error,
+                          size_t error_capacity) {
+  BinaryEmitter *emitter = NULL;
+  Arm64Emit code;
+  LblMap functions = {0};
+  int *returns_float = NULL;
+  int success = 0;
+  int code_initialized = 0;
+
+  if (!prog || !path || !path[0]) {
+    arm64_object_error(error, error_capacity, "invalid AArch64 object input");
+    return 0;
+  }
+  emitter = binary_emitter_create(BINARY_TARGET_FORMAT_ELF_ARM64);
+  if (!emitter) {
+    arm64_object_error(error, error_capacity,
+                       "out of memory creating AArch64 object emitter");
+    return 0;
+  }
+
+  Arm64ObjectContext object = {0};
+  object.emitter = emitter;
+  object.program = prog;
+  object.text_section = binary_emitter_get_or_create_section(
+      emitter, ".text", BINARY_SECTION_TEXT, 0, 4);
+  object.rodata_section = binary_emitter_get_or_create_section(
+      emitter, ".rodata", BINARY_SECTION_RDATA, 0, 8);
+  size_t data_section = binary_emitter_get_or_create_section(
+      emitter, ".data", BINARY_SECTION_DATA, 0, 8);
+  size_t bss_section = binary_emitter_get_or_create_section(
+      emitter, ".bss", BINARY_SECTION_BSS, 0, 8);
+  if (object.text_section == (size_t)-1 ||
+      object.rodata_section == (size_t)-1 || data_section == (size_t)-1 ||
+      bss_section == (size_t)-1) {
+    arm64_object_error(error, error_capacity,
+                       binary_emitter_get_error(emitter));
+    goto cleanup;
+  }
+
+  /* Undefined symbols must exist before relocations reference them; globals
+   * are laid out before code so address materialization is uniformly symbolic. */
+  for (size_t i = 0; i < prog->module_symbol_count; i++) {
+    const IRModuleSymbol *symbol = &prog->module_symbols[i];
+    if (symbol->kind == IR_MODSYM_VARIABLE) {
+      if (!arm64_object_emit_global(&object, symbol, data_section,
+                                    bss_section)) {
+        arm64_object_error(error, error_capacity,
+                           binary_emitter_get_error(emitter)
+                               ? binary_emitter_get_error(emitter)
+                               : "unsupported AArch64 global variable");
+        goto cleanup;
+      }
+    } else if (symbol->kind == IR_MODSYM_FUNCTION && symbol->is_extern) {
+      if (!binary_emitter_declare_external(emitter,
+                                           module_link_name(symbol))) {
+        arm64_object_error(error, error_capacity,
+                           binary_emitter_get_error(emitter));
+        goto cleanup;
+      }
+    }
+  }
+
+  returns_float = calloc(prog->function_count ? prog->function_count : 1,
+                         sizeof(*returns_float));
+  if (!returns_float) {
+    arm64_object_error(error, error_capacity,
+                       "out of memory classifying AArch64 functions");
+    goto cleanup;
+  }
+  for (size_t iteration = 0; iteration <= prog->function_count; iteration++) {
+    int changed = 0;
+    for (size_t i = 0; i < prog->function_count; i++) {
+      if (!returns_float[i] &&
+          fn_returns_float(prog->functions[i], prog, returns_float)) {
+        returns_float[i] = 1;
+        changed = 1;
+      }
+    }
+    if (!changed) break;
+  }
+
+  arm64_emit_init(&code);
+  code_initialized = 1;
+  if (!binary_emitter_define_symbol(emitter, "$x", BINARY_SYMBOL_LOCAL,
+                                    object.text_section, 0, 0)) {
+    arm64_object_error(error, error_capacity,
+                       binary_emitter_get_error(emitter));
+    goto cleanup;
+  }
+
+  for (size_t i = 0; i < prog->function_count && !code.error; i++) {
+    const IRFunction *function = prog->functions[i];
+    const IRModuleSymbol *symbol =
+        module_function(prog, function ? function->name : NULL);
+    if (!function || function->is_kernel ||
+        (symbol && (symbol->is_extern || !symbol->has_body)) ||
+        strcmp(function->name, "cstr") == 0) {
+      continue;
+    }
+    size_t start = arm64_here(&code);
+    arm64_bind_label(&code,
+                     label_for(&code, &functions, function->name));
+    if (!encode_function(&code, function, &functions, prog, returns_float,
+                         &object)) {
+      break;
+    }
+    const char *link_name = symbol ? module_link_name(symbol) : function->name;
+    if (!binary_emitter_define_symbol(
+            emitter, link_name, BINARY_SYMBOL_GLOBAL, object.text_section,
+            start, arm64_here(&code) - start)) {
+      code.error = 1;
+      break;
+    }
+  }
+  if (code.error || !arm64_emit_finalize(&code)) {
+    arm64_object_error(error, error_capacity,
+                       binary_emitter_get_error(emitter)
+                           ? binary_emitter_get_error(emitter)
+                           : "AArch64 IR lowering failed");
+    goto cleanup;
+  }
+  if (!binary_emitter_append_bytes(emitter, object.text_section,
+                                   code.code.data, code.code.len, NULL) ||
+      !binary_emitter_write_object_file(emitter, path)) {
+    arm64_object_error(error, error_capacity,
+                       binary_emitter_get_error(emitter));
+    goto cleanup;
+  }
+  success = 1;
+
+cleanup:
+  if (code_initialized) arm64_emit_free(&code);
+  free(functions.names);
+  free(functions.ids);
+  free(returns_float);
+  binary_emitter_destroy(emitter);
+  return success;
 }
 
 /* ---- minimal static AArch64 ELF executable ------------------------------ */

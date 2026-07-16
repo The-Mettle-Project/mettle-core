@@ -52,6 +52,7 @@ typedef struct MtlcType {
   MtlcTypeKind kind;
   const char *name;            /* canonical, parseable name; may be NULL */
   size_t size, alignment;      /* bytes */
+  MtlcAddressSpace address_space; /* POINTER only */
 
   struct MtlcType *base_type;  /* pointee (POINTER) / element (ARRAY) */
   size_t array_size;           /* element count (ARRAY) */
@@ -90,6 +91,8 @@ The canonical constructors make that trivial:
 ```c
 const MtlcType *mtlc_type_scalar(MtlcTypeKind kind);
 const MtlcType *mtlc_type_pointer(const MtlcType *base);
+const MtlcType *mtlc_type_pointer_in(const MtlcType *base,
+                                     MtlcAddressSpace address_space);
 ```
 
 - `mtlc_type_scalar` returns a static singleton per scalar kind: immortal,
@@ -97,9 +100,11 @@ const MtlcType *mtlc_type_pointer(const MtlcType *base);
   NULL for kinds needing caller-supplied layout (`STRUCT`, `ARRAY`,
   `TAGGED_ENUM`, `ENUM`, `FUNCTION_POINTER`, and raw `POINTER`; build pointers
   with `mtlc_type_pointer`).
-- `mtlc_type_pointer` interns: the first request for pointer-to-`base`
+- `mtlc_type_pointer` creates a generic pointer. `mtlc_type_pointer_in` creates
+  a pointer in generic, global, workgroup, constant, or private device memory.
+  Pointer descriptors intern by `(base, address_space)`: the first request
   allocates a descriptor that lives for the rest of the process, and every
-  later request with the same `base` returns the same pointer. Chains compose
+  later identical request returns the same pointer. Chains compose
   (`mtlc_type_pointer(mtlc_type_pointer(i64))` is `int64**`). The intern cache
   is thread-local, upholding the backend's no-shared-mutable-globals rule;
   descriptors created on different threads for the same pointee are distinct
@@ -117,7 +122,9 @@ The builder registers every descriptor it saw under `type->name` (falling back
 to the kind name), so:
 
 - canonical scalars register as `"int8"` ... `"void"`;
-- interned pointers register as `"<base>*"` (`"int64*"`, `"float32**"`);
+- generic pointers register as `"<base>*"` (`"int64*"`, `"float32**"`);
+  explicitly spaced pointers include the space in their canonical name (for
+  example `"global:float32*"`) so distinct spaces cannot collide;
 - a hand-built descriptor **must have a unique, stable `name`**, or two
   different structs would collide under the fallback kind name.
 

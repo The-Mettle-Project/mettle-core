@@ -72,7 +72,6 @@ Parser *parser_create_with_error_reporter(Lexer *lexer,
   parser->error_recovery_mode = 0;
   parser->source_filename = error_reporter_current_filename(error_reporter);
   parser->gpu_mode = 0;
-  parser->dispatch_counter = 0;
 
   if (parser->current_token.type == TOKEN_ERROR) {
     parser_report_lexer_token_error(parser, &parser->current_token);
@@ -142,6 +141,12 @@ static const char *token_type_to_string(TokenType type) {
     return "'export'";
   case TOKEN_VAR:
     return "'var'";
+  case TOKEN_WORKGROUP:
+    return "'workgroup'";
+  case TOKEN_PRIVATE:
+    return "'private'";
+  case TOKEN_BARRIER:
+    return "'barrier'";
   case TOKEN_FUNCTION:
   case TOKEN_FN:
     return "'fn'";
@@ -388,6 +393,9 @@ void parser_synchronize(Parser *parser) {
     case TOKEN_FUNCTION:
     case TOKEN_FN:
     case TOKEN_VAR:
+    case TOKEN_WORKGROUP:
+    case TOKEN_PRIVATE:
+    case TOKEN_BARRIER:
     case TOKEN_STRUCT:
     case TOKEN_RETURN:
     case TOKEN_IF:
@@ -768,7 +776,11 @@ ASTNode *parser_parse_declaration(Parser *parser) {
   }
   case TOKEN_VAR:
   case TOKEN_CONST:
+  case TOKEN_WORKGROUP:
+  case TOKEN_PRIVATE:
     return parser_parse_var_declaration(parser);
+  case TOKEN_BARRIER:
+    return parser_parse_barrier_statement(parser);
   case TOKEN_DEFER:
     return parser_parse_defer_statement(parser);
   case TOKEN_ERRDEFER:
@@ -967,7 +979,11 @@ ASTNode *parser_parse_statement(Parser *parser) {
     return parser_parse_declaration(parser);
   case TOKEN_VAR:
   case TOKEN_CONST:
+  case TOKEN_WORKGROUP:
+  case TOKEN_PRIVATE:
     return parser_parse_var_declaration(parser);
+  case TOKEN_BARRIER:
+    return parser_parse_barrier_statement(parser);
   case TOKEN_RETURN:
     return parser_parse_return_statement(parser);
   case TOKEN_IF:
@@ -2125,13 +2141,13 @@ static int parser_try_parse_generic_call_type_args(Parser *parser,
   return 0;
 }
 
-// Kernel index built-ins: maps `<obj>.<axis>` to its GPU sreg intrinsic
-// link-name (gpu_tid_x etc.), or NULL if not a built-in. Mirrors CUDA:
-//   thread.x     -> gpu_tid_x     (threadIdx.x)
-//   block.x      -> gpu_ctaid_x   (blockIdx.x)
-//   block_dim.x  -> gpu_ntid_x    (blockDim.x)
-//   grid_dim.x   -> gpu_nctaid_x  (gridDim.x)
-// Only consulted in --emit-ptx (gpu_mode) compiles. Returns a pointer into a
+// Kernel index built-ins: maps `<obj>.<axis>` to its target-neutral GPU index
+// intrinsic link-name (gpu_tid_x etc.), or NULL if not a built-in:
+//   thread.x     -> gpu_tid_x
+//   block.x      -> gpu_ctaid_x
+//   block_dim.x  -> gpu_ntid_x
+//   grid_dim.x   -> gpu_nctaid_x
+// Only consulted in GPU-module (gpu_mode) compiles. Returns a pointer into a
 // static buffer (single-threaded parse; copied immediately by the caller).
 static const char *parser_gpu_index_intrinsic(const char *obj,
                                               const char *axis) {
@@ -2232,10 +2248,32 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
 
     if (parser->current_token.type == TOKEN_LPAREN) {
       // Function call or method call
+      int tensor_named_call =
+          parser_identifier_name_is(expr, "tensor_mma") ||
+          parser_identifier_name_is(expr, "tensor_matmul") ||
+          parser_identifier_name_is(expr, "tensor_epilogue") ||
+          parser_identifier_name_is(expr, "tensor_transfer_workgroup");
+      int atomic_named_call =
+          parser_identifier_name_is(expr, "atomic_fetch_add") ||
+          parser_identifier_name_is(expr, "atomic_fetch_sub") ||
+          parser_identifier_name_is(expr, "atomic_fetch_min") ||
+          parser_identifier_name_is(expr, "atomic_fetch_max") ||
+          parser_identifier_name_is(expr, "atomic_fetch_and") ||
+          parser_identifier_name_is(expr, "atomic_fetch_or") ||
+          parser_identifier_name_is(expr, "atomic_fetch_xor") ||
+          parser_identifier_name_is(expr, "atomic_load") ||
+          parser_identifier_name_is(expr, "atomic_store") ||
+          parser_identifier_name_is(expr, "atomic_exchange") ||
+          parser_identifier_name_is(expr, "atomic_compare_exchange");
+      int async_named_call =
+          parser_identifier_name_is(expr, "async_copy_workgroup");
+      int compiler_named_call =
+          tensor_named_call || atomic_named_call || async_named_call;
       parser_advance(parser); // consume '('
 
       // Parse arguments first (common to both cases)
       ASTNode **arguments = NULL;
+      char **argument_names = NULL;
       size_t arg_count = 0;
 
       if (parser_identifier_name_is(expr, "sizeof")) {
@@ -2281,12 +2319,36 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
         }
       } else if (parser->current_token.type != TOKEN_RPAREN) {
         do {
-          ASTNode *arg = parser_parse_expression(parser);
-          if (!arg)
+          char *argument_name = NULL;
+          if (compiler_named_call &&
+              parser->current_token.type == TOKEN_IDENTIFIER &&
+              parser->peek_token.type == TOKEN_COLON) {
+            argument_name = strdup(parser->current_token.value);
+            parser_advance(parser); /* name -> ':' */
+            parser_advance(parser); /* ':' -> value */
+          }
+          ASTNode *arg = NULL;
+          /* `workgroup` is a declaration keyword, but it is also the neutral
+           * memory-model spelling used by native atomic named options. Preserve
+           * it as an identifier value in this tightly scoped call grammar. */
+          if (compiler_named_call && argument_name &&
+              parser->current_token.type == TOKEN_WORKGROUP) {
+            arg = ast_create_identifier(
+                "workgroup", parser_current_location(parser));
+            parser_advance(parser);
+          } else {
+            arg = parser_parse_expression(parser);
+          }
+          if (!arg) {
+            free(argument_name);
             break;
+          }
 
           arguments = realloc(arguments, (arg_count + 1) * sizeof(ASTNode *));
+          argument_names =
+              realloc(argument_names, (arg_count + 1) * sizeof(char *));
           arguments[arg_count] = arg;
+          argument_names[arg_count] = argument_name;
           arg_count++;
 
           if (parser->current_token.type == TOKEN_COMMA) {
@@ -2303,8 +2365,10 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
       if (!parser_expect(parser, TOKEN_RPAREN)) {
         for (size_t i = 0; i < arg_count; i++) {
           ast_destroy_node(arguments[i]);
+          free(argument_names ? argument_names[i] : NULL);
         }
         free(arguments);
+        free(argument_names);
         ast_destroy_node(expr);
         return NULL;
       }
@@ -2323,6 +2387,9 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
 
         expr = ast_create_method_call(object, method_name, arguments, arg_count,
                                       location);
+        for (size_t i = 0; i < arg_count; i++)
+          free(argument_names ? argument_names[i] : NULL);
+        free(argument_names);
         free(method_name);
       } else if (expr->type == AST_IDENTIFIER) {
         // Regular function call (or function pointer variable - type checker
@@ -2333,6 +2400,13 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
 
         expr = ast_create_call_expression(func_name, arguments, arg_count,
                                           location);
+        if (expr && expr->data) {
+          ((CallExpression *)expr->data)->argument_names = argument_names;
+          argument_names = NULL;
+        }
+        for (size_t i = 0; i < arg_count && argument_names; i++)
+          free(argument_names[i]);
+        free(argument_names);
         free(func_name);
       } else {
         // (expr)(args) / f(...)(args): call through the value the expression
@@ -2340,6 +2414,9 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
         // callee expression and the argument nodes; only the array is ours.
         ASTNode *fp = ast_create_func_ptr_call(expr, arguments, arg_count,
                                                location);
+        for (size_t i = 0; i < arg_count; i++)
+          free(argument_names ? argument_names[i] : NULL);
+        free(argument_names);
         free(arguments);
         if (!fp) {
           return NULL;
@@ -2361,7 +2438,7 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
       parser_advance(parser);
 
       // GPU kernel index built-ins: `thread.x` etc. desugar to a call to the
-      // corresponding gpu_* intrinsic (only in --emit-ptx compiles).
+      // corresponding target-neutral gpu_* intrinsic in GPU-module compiles.
       const char *gpu_intr = NULL;
       if (parser->gpu_mode && expr->type == AST_IDENTIFIER && expr->data) {
         gpu_intr =
@@ -2374,6 +2451,7 @@ ASTNode *parser_parse_postfix_expression(Parser *parser) {
         if (!call) {
           return NULL;
         }
+        ((CallExpression *)call->data)->is_gpu_index = 1;
         expr = call;
       } else {
         expr = ast_create_member_access(expr, member, location);
@@ -2740,6 +2818,19 @@ ASTNode *parser_parse_var_declaration(Parser *parser) {
     return NULL;
 
   SourceLocation location = parser_current_location(parser);
+  AstAddressSpace address_space = AST_ADDRESS_SPACE_DEFAULT;
+  if (parser->current_token.type == TOKEN_WORKGROUP ||
+      parser->current_token.type == TOKEN_PRIVATE) {
+    address_space = parser->current_token.type == TOKEN_WORKGROUP
+                        ? AST_ADDRESS_SPACE_WORKGROUP
+                        : AST_ADDRESS_SPACE_PRIVATE;
+    parser_advance(parser);
+    if (parser->current_token.type != TOKEN_VAR) {
+      parser_set_error(parser,
+                       "Expected 'var' after GPU address-space qualifier");
+      return NULL;
+    }
+  }
   // Expect 'var' or 'const' keyword
   int is_const = (parser->current_token.type == TOKEN_CONST);
   if (is_const) {
@@ -2811,13 +2902,87 @@ ASTNode *parser_parse_var_declaration(Parser *parser) {
   ASTNode *var_decl =
       ast_create_var_declaration(var_name, type_name, initializer, location);
   if (var_decl && var_decl->data) {
-    ((VarDeclaration *)var_decl->data)->is_const = is_const;
+    VarDeclaration *data = (VarDeclaration *)var_decl->data;
+    data->is_const = is_const;
+    data->address_space = address_space;
   }
 
   free(var_name);
   free(type_name);
 
   return var_decl;
+}
+
+ASTNode *parser_parse_barrier_statement(Parser *parser) {
+  if (!parser || parser->current_token.type != TOKEN_BARRIER) return NULL;
+  SourceLocation location = parser_current_location(parser);
+  unsigned regions = 0;
+  AstMemoryOrder order = AST_MEMORY_ORDER_SEQ_CST;
+  int saw_order = 0;
+  parser_advance(parser);
+  if (!parser_expect(parser, TOKEN_LPAREN)) return NULL;
+  while (parser->current_token.type != TOKEN_RPAREN &&
+         parser->current_token.type != TOKEN_EOF) {
+    const char *item = parser->current_token.value;
+    if (!item) {
+      parser_set_error(parser, "Expected barrier memory region or order");
+      return NULL;
+    }
+    unsigned region = 0;
+    AstMemoryOrder parsed_order = AST_MEMORY_ORDER_SEQ_CST;
+    int is_order = 0;
+    if (strcmp(item, "workgroup") == 0) {
+      region = AST_MEMORY_REGION_WORKGROUP;
+    } else if (strcmp(item, "global") == 0) {
+      region = AST_MEMORY_REGION_GLOBAL;
+    } else if (strcmp(item, "acquire") == 0) {
+      parsed_order = AST_MEMORY_ORDER_ACQUIRE;
+      is_order = 1;
+    } else if (strcmp(item, "release") == 0) {
+      parsed_order = AST_MEMORY_ORDER_RELEASE;
+      is_order = 1;
+    } else if (strcmp(item, "acq_rel") == 0) {
+      parsed_order = AST_MEMORY_ORDER_ACQ_REL;
+      is_order = 1;
+    } else if (strcmp(item, "seq_cst") == 0) {
+      parsed_order = AST_MEMORY_ORDER_SEQ_CST;
+      is_order = 1;
+    } else {
+      parser_set_error(parser,
+                       "Barrier arguments are workgroup/global memory regions "
+                       "or acquire/release/acq_rel/seq_cst orders");
+      return NULL;
+    }
+    if (is_order) {
+      if (saw_order) {
+        parser_set_error(parser, "Barrier accepts exactly one memory order");
+        return NULL;
+      }
+      saw_order = 1;
+      order = parsed_order;
+    } else {
+      if (regions & region) {
+        parser_set_error(parser, "Duplicate barrier memory region");
+        return NULL;
+      }
+      regions |= region;
+    }
+    parser_advance(parser);
+    if (parser->current_token.type == TOKEN_COMMA) {
+      parser_advance(parser);
+      if (parser->current_token.type == TOKEN_RPAREN) {
+        parser_set_error(parser, "Trailing comma in barrier contract");
+        return NULL;
+      }
+    } else if (parser->current_token.type != TOKEN_RPAREN) {
+      parser_set_error(parser, "Expected ',' or ')' in barrier contract");
+      return NULL;
+    }
+  }
+  if (!parser_expect(parser, TOKEN_RPAREN)) return NULL;
+  if (regions == 0) regions = AST_MEMORY_REGION_WORKGROUP;
+  parser_expect_statement_end(parser);
+  return ast_create_barrier_statement(regions, order, location);
 }
 
 static int parser_parse_parameter_list(Parser *parser, char ***out_names,
@@ -2892,8 +3057,10 @@ ASTNode *parser_parse_function_declaration(Parser *parser) {
     parser_set_error(parser, "Expected 'fn' or 'kernel'");
     return NULL;
   }
-  // `kernel` is the GPU-facing spelling of a top-level function; it parses
-  // identically and is emitted as a PTX .entry by --emit-ptx.
+  /* Preserve kernel identity. The declaration otherwise shares the function
+   * grammar, but semantic analysis and the backend treat it as a GPU entry
+   * point rather than an ordinary host/device helper function. */
+  int is_kernel = parser->current_token.type == TOKEN_KERNEL;
   parser_advance(parser);
 
   // Expect function name
@@ -3073,6 +3240,7 @@ ASTNode *parser_parse_function_declaration(Parser *parser) {
                                       param_count, return_type, body, location);
   if (func_decl && func_decl->data) {
     FunctionDeclaration *func_data = (FunctionDeclaration *)func_decl->data;
+    func_data->is_kernel = is_kernel;
     if (link_name) {
       func_data->link_name = strdup(link_name);
       if (!func_data->link_name) {
@@ -4163,30 +4331,18 @@ static ASTNode *parser_parse_range_for(Parser *parser, SourceLocation location) 
                                   location);
 }
 
-static void parser_block_add(ASTNode *block, ASTNode *stmt) {
-  if (!block || !stmt) {
-    return;
-  }
-  Program *bd = (Program *)block->data;
-  ASTNode **grown =
-      realloc(bd->declarations, (bd->declaration_count + 1) * sizeof(ASTNode *));
-  if (!grown) {
-    return;
-  }
-  bd->declarations = grown;
-  bd->declarations[bd->declaration_count++] = stmt;
-  ast_add_child(block, stmt);
-}
-
-// GPU kernel launch: `dispatch K[grid, block](a0, a1, ...)`.
-// Desugars (launch-only) at parse time into a block that marshals the args into
-// a CUDA-style void** params array and calls std/gpu's gpu_launch:
-//   { var __a0 = a0; ...; var __p: int64[N];
-//     __p[0] = (int64)&__a0; ...;
-//     gpu_launch(K, grid, block, &__p[0], N); }
-// Each arg lives in a naturally-typed (inferred) local, so &__ai yields a
-// correctly-typed pointer and the kernel reads the right bytes -- no manual
-// per-arg type juggling. Device memory stays explicit (the user's call).
+// GPU kernel launch. The compact form remains
+//
+//   dispatch K[grid, block](a0, ...)
+//
+// and the complete neutral launch surface is
+//
+//   dispatch K[grid: (gx, gy, gz), block: (bx, by, bz),
+//              shared: bytes, stream: handle](a0, ...)
+//
+// Named options may be reordered; grid and block are required, while shared
+// and stream default to zero. Parsing preserves a semantic launch statement.
+// Argument ABI marshalling belongs to host-runtime lowering, not the parser.
 static ASTNode *parser_parse_dispatch_statement(Parser *parser) {
   SourceLocation loc = parser_current_location(parser);
   parser_advance(parser); // consume 'dispatch'
@@ -4196,39 +4352,141 @@ static ASTNode *parser_parse_dispatch_statement(Parser *parser) {
                      "Expected a kernel handle (identifier) after 'dispatch'");
     return NULL;
   }
-  char *kernel_name = strdup(parser->current_token.value);
+  ASTNode *kernel =
+      ast_create_identifier(parser->current_token.value, loc);
   parser_advance(parser);
 
-  ASTNode *grid = NULL;
-  ASTNode *block = NULL;
+  ASTNode *grid[3] = {NULL, NULL, NULL};
+  ASTNode *block[3] = {NULL, NULL, NULL};
+  ASTNode *shared = NULL;
+  ASTNode *stream = NULL;
   ASTNode *args[64];
   size_t nargs = 0;
 
 #define DISP_FAIL()                                                            \
   do {                                                                         \
-    free(kernel_name);                                                         \
-    if (grid)                                                                  \
-      ast_destroy_node(grid);                                                  \
-    if (block)                                                                 \
-      ast_destroy_node(block);                                                 \
+    ast_destroy_node(kernel);                                                  \
+    for (size_t _d = 0; _d < 3; _d++) {                                       \
+      ast_destroy_node(grid[_d]);                                              \
+      ast_destroy_node(block[_d]);                                             \
+    }                                                                          \
+    ast_destroy_node(shared);                                                  \
+    ast_destroy_node(stream);                                                  \
     for (size_t _i = 0; _i < nargs; _i++)                                      \
       ast_destroy_node(args[_i]);                                              \
     return NULL;                                                               \
   } while (0)
 
-  // [ grid , block ]
+  if (!kernel) {
+    parser_set_error(parser, "Out of memory creating GPU launch handle");
+    DISP_FAIL();
+  }
+
+  // Compact [grid, block] or complete named launch controls.
   if (!parser_expect(parser, TOKEN_LBRACKET)) {
-    parser_set_error(parser, "Expected '[grid, block]' after the dispatch kernel");
+    parser_set_error(parser, "Expected launch controls after the dispatch kernel");
     DISP_FAIL();
   }
-  grid = parser_parse_expression(parser);
-  if (!grid || !parser_expect(parser, TOKEN_COMMA)) {
-    if (grid && !parser->has_error)
-      parser_set_error(parser, "Expected ',' between grid and block in dispatch");
-    DISP_FAIL();
+  int named_controls = parser->current_token.type == TOKEN_IDENTIFIER &&
+                       parser->peek_token.type == TOKEN_COLON;
+  if (!named_controls) {
+    grid[0] = parser_parse_expression(parser);
+    if (!grid[0] || !parser_expect(parser, TOKEN_COMMA)) {
+      if (grid[0] && !parser->has_error)
+        parser_set_error(parser,
+                         "Expected ',' between grid and block in dispatch");
+      DISP_FAIL();
+    }
+    block[0] = parser_parse_expression(parser);
+    if (!block[0] || !parser_expect(parser, TOKEN_RBRACKET)) {
+      DISP_FAIL();
+    }
+    grid[1] = ast_create_number_literal(1, loc, 10);
+    grid[2] = ast_create_number_literal(1, loc, 10);
+    block[1] = ast_create_number_literal(1, loc, 10);
+    block[2] = ast_create_number_literal(1, loc, 10);
+  } else {
+    int have_grid = 0, have_block = 0, have_shared = 0, have_stream = 0;
+    while (parser->current_token.type != TOKEN_RBRACKET) {
+      if (parser->current_token.type != TOKEN_IDENTIFIER ||
+          parser->peek_token.type != TOKEN_COLON) {
+        parser_set_error(
+            parser,
+            "Expected grid:, block:, shared:, or stream: in dispatch controls");
+        DISP_FAIL();
+      }
+      int option = 0;
+      if (!strcmp(parser->current_token.value, "grid")) option = 1;
+      else if (!strcmp(parser->current_token.value, "block")) option = 2;
+      else if (!strcmp(parser->current_token.value, "shared")) option = 3;
+      else if (!strcmp(parser->current_token.value, "stream")) option = 4;
+      else {
+        parser_set_error(parser, "Unknown named dispatch control");
+        DISP_FAIL();
+      }
+      if ((option == 1 && have_grid) || (option == 2 && have_block) ||
+          (option == 3 && have_shared) || (option == 4 && have_stream)) {
+        parser_set_error(parser, "Duplicate named dispatch control");
+        DISP_FAIL();
+      }
+      if (option == 1) have_grid = 1;
+      else if (option == 2) have_block = 1;
+      else if (option == 3) have_shared = 1;
+      else have_stream = 1;
+
+      parser_advance(parser); // control name
+      if (!parser_expect(parser, TOKEN_COLON)) DISP_FAIL();
+      if (option == 1 || option == 2) {
+        ASTNode **dimensions = option == 1 ? grid : block;
+        if (!parser_expect(parser, TOKEN_LPAREN)) {
+          parser_set_error(parser,
+                           "Expected a three-dimensional dispatch tuple");
+          DISP_FAIL();
+        }
+        for (size_t d = 0; d < 3; d++) {
+          dimensions[d] = parser_parse_expression(parser);
+          if (!dimensions[d]) DISP_FAIL();
+          if (d < 2 && !parser_expect(parser, TOKEN_COMMA)) {
+            parser_set_error(parser,
+                             "Dispatch grid and block require exactly three dimensions");
+            DISP_FAIL();
+          }
+        }
+        if (!parser_expect(parser, TOKEN_RPAREN)) {
+          parser_set_error(parser,
+                           "Dispatch grid and block require exactly three dimensions");
+          DISP_FAIL();
+        }
+      } else {
+        ASTNode **value = option == 3 ? &shared : &stream;
+        *value = parser_parse_expression(parser);
+        if (!*value) DISP_FAIL();
+      }
+      if (parser->current_token.type == TOKEN_COMMA) {
+        parser_advance(parser);
+        if (parser->current_token.type == TOKEN_RBRACKET) {
+          parser_set_error(parser,
+                           "Trailing comma in named dispatch controls");
+          DISP_FAIL();
+        }
+      } else if (parser->current_token.type != TOKEN_RBRACKET) {
+        parser_set_error(parser,
+                         "Expected ',' between named dispatch controls");
+        DISP_FAIL();
+      }
+    }
+    if (!have_grid || !have_block) {
+      parser_set_error(parser,
+                       "Named dispatch controls require grid and block");
+      DISP_FAIL();
+    }
+    if (!parser_expect(parser, TOKEN_RBRACKET)) DISP_FAIL();
   }
-  block = parser_parse_expression(parser);
-  if (!block || !parser_expect(parser, TOKEN_RBRACKET)) {
+
+  if (!shared) shared = ast_create_number_literal(0, loc, 10);
+  if (!stream) stream = ast_create_number_literal(0, loc, 10);
+  if (!grid[1] || !grid[2] || !block[1] || !block[2] || !shared || !stream) {
+    parser_set_error(parser, "Out of memory creating GPU launch controls");
     DISP_FAIL();
   }
 
@@ -4258,83 +4516,15 @@ static ASTNode *parser_parse_dispatch_statement(Parser *parser) {
   if (!parser_expect(parser, TOKEN_RPAREN)) {
     DISP_FAIL();
   }
+
+  ASTNode *launch = ast_create_gpu_launch(kernel, grid, block, shared, stream,
+                                          args, nargs, loc);
+  if (!launch) {
+    parser_set_error(parser, "Out of memory creating GPU launch");
+    DISP_FAIL();
+  }
 #undef DISP_FAIL
-
-  int uid = parser->dispatch_counter++;
-  char pname[32];
-  snprintf(pname, sizeof(pname), "__mdsp%d_p", uid);
-
-  ASTNode *blk = ast_create_program();
-  if (!blk) {
-    goto oom;
-  }
-
-  // var __mdsp<uid>_a<i> = arg_i;   (type is structural: it is the arg's type)
-  for (size_t i = 0; i < nargs; i++) {
-    char an[32];
-    snprintf(an, sizeof(an), "__mdsp%d_a%zu", uid, i);
-    ASTNode *arg_decl = ast_create_var_declaration(an, NULL, args[i], loc);
-    if (arg_decl && arg_decl->data) {
-      ((VarDeclaration *)arg_decl->data)->structural_type = 1;
-    }
-    parser_block_add(blk, arg_decl);
-    args[i] = NULL; // ownership moved into the var decl
-  }
-
-  if (nargs > 0) {
-    // var __mdsp<uid>_p: int64[N];
-    char ptype[24];
-    snprintf(ptype, sizeof(ptype), "int64[%zu]", nargs);
-    parser_block_add(blk, ast_create_var_declaration(pname, ptype, NULL, loc));
-    // __mdsp<uid>_p[i] = (int64)&__mdsp<uid>_a<i>;
-    for (size_t i = 0; i < nargs; i++) {
-      char an[32];
-      snprintf(an, sizeof(an), "__mdsp%d_a%zu", uid, i);
-      ASTNode *target = ast_create_array_index_expression(
-          ast_create_identifier(pname, loc), ast_create_number_literal((long long)i, loc, 10), loc);
-      ASTNode *addr =
-          ast_create_unary_expression("&", ast_create_identifier(an, loc), loc);
-      ASTNode *castv = ast_create_cast_expression("int64", addr, loc);
-      parser_block_add(blk, ast_create_field_assignment(target, castv, loc));
-    }
-  }
-
-  // gpu_launch(K, grid, block, &__p[0] | (int64*)0, N);
-  ASTNode *params_ptr;
-  if (nargs > 0) {
-    params_ptr = ast_create_unary_expression(
-        "&",
-        ast_create_array_index_expression(
-            ast_create_identifier(pname, loc),
-            ast_create_number_literal(0, loc, 10), loc),
-        loc);
-  } else {
-    params_ptr = ast_create_cast_expression(
-        "int64*", ast_create_number_literal(0, loc, 10), loc);
-  }
-  ASTNode *call_args[5];
-  call_args[0] = ast_create_identifier(kernel_name, loc);
-  call_args[1] = grid;
-  call_args[2] = block;
-  call_args[3] = params_ptr;
-  call_args[4] = ast_create_number_literal((long long)nargs, loc, 10);
-  parser_block_add(blk,
-                   ast_create_call_expression("gpu_launch", call_args, 5, loc));
-
-  free(kernel_name);
-  return blk;
-
-oom:
-  free(kernel_name);
-  if (grid)
-    ast_destroy_node(grid);
-  if (block)
-    ast_destroy_node(block);
-  for (size_t i = 0; i < nargs; i++)
-    if (args[i])
-      ast_destroy_node(args[i]);
-  parser_set_error(parser, "Out of memory desugaring dispatch");
-  return NULL;
+  return launch;
 }
 
 ASTNode *parser_parse_for_statement(Parser *parser) {

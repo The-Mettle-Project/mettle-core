@@ -15,6 +15,7 @@
 #define MTLC_TYPE_H
 
 #include <stddef.h>
+#include "memory.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +50,10 @@ typedef struct MtlcType {
   const char *name;      /* optional; interned/owned by the frontend adapter */
   size_t size;           /* size in bytes */
   size_t alignment;      /* alignment in bytes */
+
+  /* Meaningful for MTLC_TYPE_POINTER. DEFAULT/GENERIC retain ordinary host
+   * pointer behavior; device frontends should use mtlc_type_pointer_in(). */
+  MtlcAddressSpace address_space;
 
   struct MtlcType *base_type; /* pointer/array element type */
   size_t array_size;          /* element count for MTLC_TYPE_ARRAY */
@@ -91,6 +96,11 @@ const MtlcType *mtlc_type_scalar(MtlcTypeKind kind);
  * canonical descriptor (from mtlc_type_scalar or mtlc_type_pointer), so
  * pointer-to-pointer chains work. Returns NULL on NULL base or OOM. */
 const MtlcType *mtlc_type_pointer(const MtlcType *base);
+
+/* Canonical pointer descriptor with an explicit device address space. The
+ * descriptor is interned and immortal like mtlc_type_pointer(). */
+const MtlcType *mtlc_type_pointer_in(const MtlcType *base,
+                                     MtlcAddressSpace address_space);
 
 /* Queries used across the backend. Implemented in src/ir/mtlc_type.c. */
 int mtlc_type_is_integer(const MtlcType *t);

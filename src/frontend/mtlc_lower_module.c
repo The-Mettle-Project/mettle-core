@@ -342,6 +342,7 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
       entry.name = fd->name;
       entry.kind = IR_MODSYM_FUNCTION;
       entry.is_extern = fd->is_extern;
+      entry.is_kernel = fd->is_kernel;
       entry.has_body =
           fd->body != NULL && program_has_function_body(program, fd->name);
       entry.link_name = s ? s->link_name : NULL;

@@ -42,6 +42,27 @@ void mtlc_context_set_explain(MtlcContext *ctx, int enabled,
 int mtlc_context_explain(const MtlcContext *ctx);
 const char *mtlc_context_explain_focus_file(const MtlcContext *ctx);
 
+/* PTX code-generation target. `target` is a PTX target ISA name such as
+ * "sm_121a" (GB10 performance profile), "sm_121" (compatible GB10 baseline),
+ * or "compute_75" (portable baseline); `isa_major.minor` selects
+ * the emitted `.version`. The context copies the target string. Returns 1 on
+ * success, 0 for a malformed/oversized target or version. A new context
+ * defaults to PTX 8.8 / sm_121a, the NVIDIA GB10 performance profile. */
+int mtlc_context_set_ptx_target(MtlcContext *ctx, const char *target,
+                                int isa_major, int isa_minor);
+const char *mtlc_context_ptx_target(const MtlcContext *ctx);
+int mtlc_context_ptx_isa_major(const MtlcContext *ctx);
+int mtlc_context_ptx_isa_minor(const MtlcContext *ctx);
+
+/* Backend-only tensor residency policy. `tuple_budget == 0` selects the PTX
+ * backend's architecture default; 1..4096 supplies an explicit logical
+ * fragment-tuple ceiling used to choose resident versus exact replay lowering.
+ * This does not alter frontend/shared-IR semantics. Returns 0 on invalid input
+ * without changing the context. */
+int mtlc_context_set_ptx_tensor_tuple_budget(MtlcContext *ctx,
+                                             int tuple_budget);
+int mtlc_context_ptx_tensor_tuple_budget(const MtlcContext *ctx);
+
 #ifdef __cplusplus
 }
 #endif

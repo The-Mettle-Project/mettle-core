@@ -1,4 +1,4 @@
-/* IR -> SPIR-V binary emitter (OpenCL 1.2 environment). See spirv_emitter.h.
+/* IR -> SPIR-V binary emitter (OpenCL 2.0 environment). See spirv_emitter.h.
  *
  * SPIR-V sibling of ptx_emitter.c. Two things make SPIR-V different from PTX:
  *
@@ -13,17 +13,18 @@
  *     IR_OP_BRANCH_ZERO/_EQ are OpBranchConditional, IR_OP_RETURN is OpReturn.
  *     SPIR-V's structured-control-flow rules (OpSelectionMerge/OpLoopMerge)
  *     are mandated only by the Shader capability; Kernel (OpenCL) modules may
- *     branch freely, exactly like PTX `bra` -- spirv-val --target-env opencl1.2
+ *     branch freely, exactly like PTX `bra` -- spirv-val --target-env opencl2.0
  *     accepts arbitrary unstructured branches and back-edges. Every IR value
  *     lives in a Function-storage variable (reg2mem) so there are never
  *     cross-block SSA references (no OpPhi); a driver's SPIR-V consumer
  *     promotes them back to registers.
  *
- * Pointers follow the PTX model: a kernel pointer parameter is an OpenCL
- * __global (CrossWorkgroup) pointer, immediately OpConvertPtrToU'd to a 64-bit
- * integer that all arithmetic runs on, then OpConvertUToPtr'd back to a typed
- * pointer at each load/store. That needs the Addresses capability and matches
- * the IR, whose address arithmetic is already baked into integer ops. */
+ * Pointers follow the PTX model: a kernel pointer parameter keeps its neutral
+ * global/workgroup address space, is immediately OpConvertPtrToU'd to a 64-bit
+ * integer that all arithmetic runs on, then OpConvertUToPtr'd back to the same
+ * typed storage-class pointer at each access. Legacy/generic kernel pointers
+ * use CrossWorkgroup in the current OpenCL 2.0 ABI. This needs the Addresses capability
+ * and matches the IR, whose address arithmetic is already integer ops. */
 #include "spirv_emitter.h"
 #include <stdarg.h>
 #include <stdint.h>
@@ -36,6 +37,7 @@
 
 /* opcodes */
 enum {
+  Op_Extension = 10,
   Op_ExtInstImport = 11,
   Op_ExtInst = 12,
   Op_MemoryModel = 14,
@@ -46,15 +48,18 @@ enum {
   Op_TypeInt = 21,
   Op_TypeFloat = 22,
   Op_TypeVector = 23,
+  Op_TypeArray = 28,
   Op_TypePointer = 32,
   Op_TypeFunction = 33,
   Op_Constant = 43,
   Op_Function = 54,
   Op_FunctionParameter = 55,
   Op_FunctionEnd = 56,
+  Op_FunctionCall = 57,
   Op_Variable = 59,
   Op_Load = 61,
   Op_Store = 62,
+  Op_VectorExtractDynamic = 77,
   Op_CompositeExtract = 81,
   Op_ConvertFToU = 109,
   Op_ConvertFToS = 110,
@@ -105,13 +110,33 @@ enum {
   Op_FOrdLessThanEqual = 188,
   Op_FOrdGreaterThanEqual = 190,
   Op_ControlBarrier = 224,
+  Op_AtomicLoad = 227,
+  Op_AtomicStore = 228,
+  Op_AtomicExchange = 229,
+  Op_AtomicCompareExchange = 230,
   Op_AtomicIAdd = 234,
+  Op_AtomicISub = 235,
   Op_AtomicUMin = 237,
+  Op_AtomicUMax = 239,
+  Op_AtomicAnd = 240,
+  Op_AtomicOr = 241,
+  Op_AtomicXor = 242,
+  Op_GroupBroadcast = 263,
+  Op_GroupIAdd = 264,
+  Op_GroupFAdd = 265,
+  Op_GroupFMin = 266,
+  Op_GroupUMin = 267,
+  Op_GroupFMax = 269,
+  Op_GroupUMax = 270,
+  Op_SubgroupBallotKHR = 4421,
+  Op_SubgroupAllKHR = 4428,
+  Op_SubgroupAnyKHR = 4429,
   Op_Decorate = 71,
   Op_Label = 248,
   Op_Branch = 249,
   Op_BranchConditional = 250,
-  Op_Return = 253
+  Op_Return = 253,
+  Op_ReturnValue = 254
 };
 
 /* capabilities */
@@ -122,14 +147,20 @@ enum {
   Cap_Float64 = 10,
   Cap_Int64 = 11,
   Cap_Int64Atomics = 12,
+  Cap_Groups = 18,
   Cap_Int16 = 22,
-  Cap_Int8 = 39
+  Cap_Int8 = 39,
+  Cap_SubgroupBallotKHR = 4423,
+  Cap_SubgroupVoteKHR = 4431
 };
 
 /* storage classes */
 enum {
+  SC_UniformConstant = 0,
   SC_Input = 1,
+  SC_Workgroup = 4,
   SC_CrossWorkgroup = 5,
+  SC_Private = 6,
   SC_Function = 7
 };
 
@@ -137,16 +168,34 @@ enum {
 enum { AddrModel_Physical64 = 2, MemModel_OpenCL = 2, ExecModel_Kernel = 6 };
 enum { Decoration_BuiltIn = 11 };
 enum { MemAccess_Aligned = 2 };
-enum { Scope_Device = 1, Scope_Workgroup = 2 };
+enum {
+  Scope_CrossDevice = 0,
+  Scope_Device = 1,
+  Scope_Workgroup = 2,
+  Scope_Subgroup = 3,
+  Scope_Invocation = 4
+};
 /* SequentiallyConsistent(0x10) | WorkgroupMemory(0x100) */
-enum { Sem_None = 0, Sem_WorkgroupBarrier = 0x110 };
+enum {
+  Sem_None = 0,
+  Sem_Acquire = 0x2,
+  Sem_Release = 0x4,
+  Sem_AcquireRelease = 0x8,
+  Sem_SequentiallyConsistent = 0x10,
+  Sem_UniformMemory = 0x40,
+  Sem_WorkgroupMemory = 0x100,
+  Sem_CrossWorkgroupMemory = 0x200,
+  Sem_WorkgroupBarrier = 0x110
+};
 
 /* BuiltIn ids */
 enum {
   BI_NumWorkgroups = 24,
   BI_WorkgroupSize = 25,
   BI_WorkgroupId = 26,
-  BI_LocalInvocationId = 27
+  BI_LocalInvocationId = 27,
+  BI_SubgroupSize = 36,
+  BI_SubgroupLocalInvocationId = 41
 };
 
 /* OpenCL.std extended instruction numbers */
@@ -227,6 +276,10 @@ typedef struct {
   uint32_t opencl_ext;
   uint32_t builtin_var[64]; /* BuiltIn id -> Input variable id (0 = none yet) */
   int use_int8, use_int16, use_float16, use_float64, use_atomics64;
+  int use_subgroups, use_subgroup_ballot, use_subgroup_vote;
+  IRProgram *program;
+  uint32_t *device_function_ids; /* indexed like program->functions */
+  uint64_t *function_builtin_masks;
   char *error;
 } SpvMod;
 
@@ -324,6 +377,15 @@ static uint32_t type_vec3_ulong(SpvMod *m) {
   cache_put(m, "v3ulong", id);
   return id;
 }
+static uint32_t type_vec4_uint(SpvMod *m) {
+  uint32_t id = cache_get(m, "v4uint");
+  if (id) return id;
+  uint32_t u32 = type_int(m, 32);
+  id = new_id(m);
+  emitv(&m->typesconsts, Op_TypeVector, 3, id, u32, 4u);
+  cache_put(m, "v4uint", id);
+  return id;
+}
 
 /* map an MtlcTypeKind to (width, is-float) */
 static int kind_is_float(MtlcTypeKind k) {
@@ -395,6 +457,17 @@ static uint32_t const_u32(SpvMod *m, uint32_t v) {
   cache_put(m, key, id);
   return id;
 }
+static uint32_t type_array(SpvMod *m, uint32_t element_type, uint32_t count) {
+  char key[48];
+  snprintf(key, sizeof(key), "a:%u:%u", element_type, count);
+  uint32_t id = cache_get(m, key);
+  if (id) return id;
+  uint32_t length = const_u32(m, count);
+  id = new_id(m);
+  emitv(&m->typesconsts, Op_TypeArray, 3, id, element_type, length);
+  cache_put(m, key, id);
+  return id;
+}
 static uint32_t const_scalar_int(SpvMod *m, MtlcTypeKind k, long long v) {
   int bits = kind_bits(k);
   char key[48];
@@ -404,7 +477,12 @@ static uint32_t const_scalar_int(SpvMod *m, MtlcTypeKind k, long long v) {
   uint32_t t = kind_type(m, k);
   id = new_id(m);
   if (bits <= 32) {
-    emitv(&m->typesconsts, Op_Constant, 3, t, id, (unsigned)(uint32_t)v);
+    uint32_t literal = (uint32_t)v;
+    /* OpenCL integer types use Signedness=0 even for language-signed values.
+     * SPIR-V therefore requires unused high bits of 8/16-bit literals to be
+     * zero; arithmetic instructions supply signed interpretation later. */
+    if (bits < 32) literal &= (1u << bits) - 1u;
+    emitv(&m->typesconsts, Op_Constant, 3, t, id, (unsigned)literal);
   } else {
     uint64_t u = (uint64_t)v;
     emitv(&m->typesconsts, Op_Constant, 4, t, id, (unsigned)(uint32_t)u,
@@ -450,13 +528,20 @@ static uint32_t const_float(SpvMod *m, MtlcTypeKind k, double v) {
   }
 }
 
-/* ---- BuiltIn Input variable (v3ulong) ---- */
+/* ---- BuiltIn Input variables ---- */
+static int builtin_is_subgroup_scalar(int builtin) {
+  return builtin == BI_SubgroupSize ||
+         builtin == BI_SubgroupLocalInvocationId;
+}
+
 static uint32_t builtin_var(SpvMod *m, int builtin) {
   if (m->builtin_var[builtin]) {
     return m->builtin_var[builtin];
   }
-  uint32_t v3 = type_vec3_ulong(m);
-  uint32_t pt = type_pointer(m, SC_Input, v3);
+  uint32_t value_type = builtin_is_subgroup_scalar(builtin)
+                            ? type_int(m, 32)
+                            : type_vec3_ulong(m);
+  uint32_t pt = type_pointer(m, SC_Input, value_type);
   uint32_t id = new_id(m);
   emitv(&m->typesconsts, Op_Variable, 3, pt, id, (unsigned)SC_Input);
   emitv(&m->decorations, Op_Decorate, 3, id, (unsigned)Decoration_BuiltIn,
@@ -473,6 +558,7 @@ typedef struct {
   int is_unsigned;
   int is_ptr;
   MtlcTypeKind elem;
+  MtlcAddressSpace address_space;
 } SpvDesc;
 
 typedef struct {
@@ -483,10 +569,15 @@ typedef struct {
 
 typedef struct {
   SpvMod *m;
+  IRFunction *function;
+  size_t function_index;
+  SpvDesc return_desc;
+  int returns_void;
   SpvBind *binds;
   size_t nbinds, capbinds;
   uint32_t used_builtins[16];
   size_t nused_builtins;
+  uint64_t builtin_mask;
 } SpvFn;
 
 static SpvBind *find_bind(SpvFn *fn, const char *name) {
@@ -511,12 +602,15 @@ static SpvBind *add_bind(SpvFn *fn, const char *name, SpvDesc d) {
   b->var_id = 0;
   return b;
 }
-static void track_builtin(SpvFn *fn, uint32_t var) {
+static void track_builtin(SpvFn *fn, int builtin, uint32_t var) {
   for (size_t i = 0; i < fn->nused_builtins; i++) {
     if (fn->used_builtins[i] == var) return;
   }
   if (fn->nused_builtins < 16) {
     fn->used_builtins[fn->nused_builtins++] = var;
+  }
+  if (builtin >= 0 && builtin < 64) {
+    fn->builtin_mask |= UINT64_C(1) << builtin;
   }
 }
 
@@ -551,12 +645,50 @@ static SpvDesc desc_from_typename(const char *name) {
     v.is_unsigned = 1;
     const char *fs = strchr(name, '*');
     v.elem = (fs && strchr(fs + 1, '*')) ? MTLC_TYPE_POINTER : base;
+    v.address_space = MTLC_ADDRESS_SPACE_GENERIC;
   } else {
     v.kind = base;
     v.is_unsigned = kind_is_unsigned(base);
     v.elem = MTLC_TYPE_VOID;
   }
   return v;
+}
+
+static SpvDesc desc_from_type(const MtlcType *type) {
+  SpvDesc v = {0};
+  if (!type) return desc_from_typename(NULL);
+  if (type->kind == MTLC_TYPE_POINTER) {
+    v.kind = MTLC_TYPE_POINTER;
+    v.is_ptr = 1;
+    v.is_unsigned = 1;
+    v.elem = type->base_type ? type->base_type->kind : MTLC_TYPE_VOID;
+    v.address_space = type->address_space == MTLC_ADDRESS_SPACE_DEFAULT
+                          ? MTLC_ADDRESS_SPACE_GLOBAL
+                          : type->address_space;
+  } else {
+    v.kind = type->kind;
+    v.is_unsigned = kind_is_unsigned(type->kind);
+    v.elem = MTLC_TYPE_VOID;
+  }
+  return v;
+}
+
+static int spv_storage_class(MtlcAddressSpace address_space) {
+  switch (address_space) {
+  case MTLC_ADDRESS_SPACE_DEFAULT:
+  case MTLC_ADDRESS_SPACE_GENERIC:
+  case MTLC_ADDRESS_SPACE_GLOBAL:
+    /* The current ABI conservatively represents generic and legacy kernel
+     * pointers as global pointers instead of requiring GenericPointer. */
+    return SC_CrossWorkgroup;
+  case MTLC_ADDRESS_SPACE_WORKGROUP: return SC_Workgroup;
+  case MTLC_ADDRESS_SPACE_CONSTANT: return SC_UniformConstant;
+  /* Mettle `private` storage is per invocation and has function lifetime.
+   * SPIR-V's Private storage class is module scope; using it for a local array
+   * is invalid in the OpenCL environment. */
+  case MTLC_ADDRESS_SPACE_PRIVATE: return SC_Function;
+  }
+  return -1;
 }
 
 static SpvDesc operand_desc(SpvFn *fn, const IROperand *op) {
@@ -578,51 +710,195 @@ static SpvDesc operand_desc(SpvFn *fn, const IROperand *op) {
 }
 
 /* ---- intrinsics classification (shared by pre-pass and body) ---- */
-static int sreg_component(const char *name, int *builtin) {
-  if (!name || strncmp(name, "gpu_", 4) != 0) return -1;
-  int comp = -1;
-  size_t len = strlen(name);
-  char axis = name[len - 1];
-  if (axis == 'x') comp = 0;
-  else if (axis == 'y') comp = 1;
-  else if (axis == 'z') comp = 2;
-  else return -1;
-  if (strncmp(name, "gpu_tid_", 8) == 0) *builtin = BI_LocalInvocationId;
-  else if (strncmp(name, "gpu_ntid_", 9) == 0) *builtin = BI_WorkgroupSize;
-  else if (strncmp(name, "gpu_ctaid_", 10) == 0) *builtin = BI_WorkgroupId;
-  else if (strncmp(name, "gpu_nctaid_", 11) == 0) *builtin = BI_NumWorkgroups;
-  else return -1;
-  return comp;
+static int sreg_component(MtlcIntrinsic intrinsic, int *builtin) {
+  switch (intrinsic) {
+  case MTLC_INTRINSIC_GPU_LOCAL_ID_X: *builtin = BI_LocalInvocationId; return 0;
+  case MTLC_INTRINSIC_GPU_LOCAL_ID_Y: *builtin = BI_LocalInvocationId; return 1;
+  case MTLC_INTRINSIC_GPU_LOCAL_ID_Z: *builtin = BI_LocalInvocationId; return 2;
+  case MTLC_INTRINSIC_GPU_LOCAL_SIZE_X: *builtin = BI_WorkgroupSize; return 0;
+  case MTLC_INTRINSIC_GPU_LOCAL_SIZE_Y: *builtin = BI_WorkgroupSize; return 1;
+  case MTLC_INTRINSIC_GPU_LOCAL_SIZE_Z: *builtin = BI_WorkgroupSize; return 2;
+  case MTLC_INTRINSIC_GPU_GROUP_ID_X: *builtin = BI_WorkgroupId; return 0;
+  case MTLC_INTRINSIC_GPU_GROUP_ID_Y: *builtin = BI_WorkgroupId; return 1;
+  case MTLC_INTRINSIC_GPU_GROUP_ID_Z: *builtin = BI_WorkgroupId; return 2;
+  case MTLC_INTRINSIC_GPU_NUM_GROUPS_X: *builtin = BI_NumWorkgroups; return 0;
+  case MTLC_INTRINSIC_GPU_NUM_GROUPS_Y: *builtin = BI_NumWorkgroups; return 1;
+  case MTLC_INTRINSIC_GPU_NUM_GROUPS_Z: *builtin = BI_NumWorkgroups; return 2;
+  default: return -1;
+  }
 }
-static int is_math_intrinsic(const char *c) {
-  return c && (!strcmp(c, "sqrtf") || !strcmp(c, "rsqrtf") ||
-               !strcmp(c, "fabsf") || !strcmp(c, "sinf") || !strcmp(c, "cosf") ||
-               !strcmp(c, "logf") || !strcmp(c, "expf"));
+static int is_math_intrinsic(MtlcIntrinsic intrinsic) {
+  return intrinsic >= MTLC_INTRINSIC_GPU_SQRT_F32 &&
+         intrinsic <= MTLC_INTRINSIC_GPU_EXP_F32;
 }
-static int is_atomic_intrinsic(const char *c) {
-  return c && (!strcmp(c, "atomic_min_u32") || !strcmp(c, "atomic_min_u64") ||
-               !strcmp(c, "atomic_add_u32"));
+static int is_atomic_intrinsic(MtlcIntrinsic intrinsic) {
+  return ir_intrinsic_is_atomic(intrinsic);
+}
+static int spv_atomic_scope(MtlcMemoryScope scope) {
+  switch (scope) {
+  case MTLC_MEMORY_SCOPE_WORK_ITEM: return Scope_Invocation;
+  case MTLC_MEMORY_SCOPE_SUBGROUP: return Scope_Subgroup;
+  case MTLC_MEMORY_SCOPE_WORKGROUP: return Scope_Workgroup;
+  case MTLC_MEMORY_SCOPE_DEFAULT:
+  case MTLC_MEMORY_SCOPE_DEVICE:
+    return Scope_Device;
+  case MTLC_MEMORY_SCOPE_SYSTEM: return Scope_CrossDevice;
+  }
+  return -1;
 }
 
-static SpvDesc call_result_desc(const IRInstruction *in) {
+static int spv_atomic_semantics(MtlcMemoryOrder order,
+                                MtlcAddressSpace address_space) {
+  int ordering;
+  int memory;
+  switch (order) {
+  case MTLC_MEMORY_ORDER_DEFAULT:
+  case MTLC_MEMORY_ORDER_RELAXED:
+    ordering = Sem_None;
+    break;
+  case MTLC_MEMORY_ORDER_ACQUIRE: ordering = Sem_Acquire; break;
+  case MTLC_MEMORY_ORDER_RELEASE: ordering = Sem_Release; break;
+  case MTLC_MEMORY_ORDER_ACQ_REL: ordering = Sem_AcquireRelease; break;
+  case MTLC_MEMORY_ORDER_SEQ_CST:
+    ordering = Sem_SequentiallyConsistent;
+    break;
+  default: return -1;
+  }
+  switch (address_space) {
+  case MTLC_ADDRESS_SPACE_DEFAULT:
+  case MTLC_ADDRESS_SPACE_GENERIC:
+  case MTLC_ADDRESS_SPACE_GLOBAL:
+    memory = Sem_CrossWorkgroupMemory;
+    break;
+  case MTLC_ADDRESS_SPACE_WORKGROUP:
+    memory = Sem_WorkgroupMemory;
+    break;
+  case MTLC_ADDRESS_SPACE_CONSTANT:
+    memory = Sem_UniformMemory;
+    break;
+  case MTLC_ADDRESS_SPACE_PRIVATE:
+  default:
+    return -1;
+  }
+  return ordering | memory;
+}
+
+static int spv_compare_exchange_failure_valid(MtlcMemoryOrder success,
+                                              MtlcMemoryOrder failure) {
+  if (failure != MTLC_MEMORY_ORDER_RELAXED &&
+      failure != MTLC_MEMORY_ORDER_ACQUIRE &&
+      failure != MTLC_MEMORY_ORDER_SEQ_CST)
+    return 0;
+  if (success == MTLC_MEMORY_ORDER_RELAXED)
+    return failure == MTLC_MEMORY_ORDER_RELAXED;
+  if (success == MTLC_MEMORY_ORDER_ACQUIRE ||
+      success == MTLC_MEMORY_ORDER_ACQ_REL)
+    return failure == MTLC_MEMORY_ORDER_RELAXED ||
+           failure == MTLC_MEMORY_ORDER_ACQUIRE;
+  if (success == MTLC_MEMORY_ORDER_RELEASE)
+    return failure == MTLC_MEMORY_ORDER_RELAXED;
+  return success == MTLC_MEMORY_ORDER_SEQ_CST;
+}
+
+static int spv_barrier_semantics(MtlcMemoryOrder order,
+                                 unsigned memory_regions) {
+  int semantics;
+  switch (order) {
+  case MTLC_MEMORY_ORDER_ACQUIRE: semantics = Sem_Acquire; break;
+  case MTLC_MEMORY_ORDER_RELEASE: semantics = Sem_Release; break;
+  case MTLC_MEMORY_ORDER_ACQ_REL: semantics = Sem_AcquireRelease; break;
+  case MTLC_MEMORY_ORDER_DEFAULT:
+  case MTLC_MEMORY_ORDER_SEQ_CST:
+    semantics = Sem_SequentiallyConsistent;
+    break;
+  default: return -1;
+  }
+  if (memory_regions == 0) memory_regions = MTLC_MEMORY_REGION_WORKGROUP;
+  if (memory_regions & MTLC_MEMORY_REGION_WORKGROUP)
+    semantics |= Sem_WorkgroupMemory;
+  if (memory_regions & MTLC_MEMORY_REGION_GLOBAL)
+    semantics |= Sem_CrossWorkgroupMemory;
+  if (memory_regions & ~(MTLC_MEMORY_REGION_WORKGROUP |
+                         MTLC_MEMORY_REGION_GLOBAL))
+    return -1;
+  return semantics;
+}
+
+static void emit_workgroup_barrier(SpvFn *fn, MtlcMemoryOrder order,
+                                   unsigned memory_regions) {
+  int semantics = spv_barrier_semantics(order, memory_regions);
+  if (semantics < 0) {
+    mod_error(fn->m, "SPIR-V: invalid workgroup barrier memory contract");
+    return;
+  }
+  uint32_t scope = const_u32(fn->m, Scope_Workgroup);
+  uint32_t sem = const_u32(fn->m, (uint32_t)semantics);
+  emitv(&fn->m->functions, Op_ControlBarrier, 3, scope, scope, sem);
+}
+
+static long spv_function_index(const IRProgram *program, const char *name) {
+  if (!program || !name) return -1;
+  for (size_t i = 0; i < program->function_count; i++) {
+    IRFunction *function = program->functions[i];
+    if (function && function->name && strcmp(function->name, name) == 0) {
+      return (long)i;
+    }
+  }
+  return -1;
+}
+
+static const MtlcType *spv_function_return_type(
+    const IRProgram *program, const IRFunction *function,
+    const IRModuleSymbol *symbol) {
+  if (symbol && symbol->kind == IR_MODSYM_FUNCTION && symbol->return_type) {
+    return symbol->return_type;
+  }
+  return function && function->return_type_name
+             ? ir_program_lookup_type(program, function->return_type_name)
+             : NULL;
+}
+
+static int spv_type_is_void(const MtlcType *type, const char *fallback_name) {
+  return (type && type->kind == MTLC_TYPE_VOID) ||
+         (!type && fallback_name && strcmp(fallback_name, "void") == 0);
+}
+
+static SpvDesc call_result_desc(SpvFn *fn, const IRInstruction *in) {
   SpvDesc r = {0};
-  const char *c = in->text;
+  MtlcIntrinsic intrinsic = in->intrinsic;
   int bi = 0;
-  if (sreg_component(c, &bi) >= 0) {
+  if (intrinsic == MTLC_INTRINSIC_NONE) {
+    long index = spv_function_index(fn->m->program, in->text);
+    if (index < 0) {
+      r.kind = MTLC_TYPE_VOID;
+      return r;
+    }
+    IRFunction *callee = fn->m->program->functions[(size_t)index];
+    const IRModuleSymbol *symbol =
+        ir_program_lookup_symbol(fn->m->program, in->text);
+    const MtlcType *return_type =
+        spv_function_return_type(fn->m->program, callee, symbol);
+    if (spv_type_is_void(return_type, callee->return_type_name)) {
+      r.kind = MTLC_TYPE_VOID;
+    } else {
+      r = return_type ? desc_from_type(return_type)
+                      : desc_from_typename(callee->return_type_name);
+    }
+  } else if (sreg_component(intrinsic, &bi) >= 0) {
     r.kind = MTLC_TYPE_UINT32;
     r.is_unsigned = 1;
-  } else if (c && !strcmp(c, "h2f")) {
+  } else if (ir_intrinsic_is_subgroup(intrinsic)) {
+    r.kind = ir_intrinsic_subgroup_result_kind(intrinsic);
+    r.is_unsigned = r.kind == MTLC_TYPE_UINT32;
+  } else if (intrinsic == MTLC_INTRINSIC_GPU_F16_BITS_TO_F32) {
     r.kind = MTLC_TYPE_FLOAT32;
-  } else if (c && !strcmp(c, "f2h")) {
+  } else if (intrinsic == MTLC_INTRINSIC_GPU_F32_TO_F16_BITS) {
     r.kind = MTLC_TYPE_UINT32;
     r.is_unsigned = 1;
-  } else if (is_math_intrinsic(c)) {
+  } else if (is_math_intrinsic(intrinsic)) {
     r.kind = MTLC_TYPE_FLOAT32;
-  } else if (c && !strcmp(c, "atomic_min_u64")) {
-    r.kind = MTLC_TYPE_UINT64;
-    r.is_unsigned = 1;
-  } else if (is_atomic_intrinsic(c)) {
-    r.kind = MTLC_TYPE_UINT32;
+  } else if (is_atomic_intrinsic(intrinsic)) {
+    r.kind = ir_intrinsic_atomic_result_kind(intrinsic);
     r.is_unsigned = 1;
   } else {
     r.kind = MTLC_TYPE_INT32;
@@ -652,6 +928,7 @@ static SpvDesc binary_result_desc(SpvFn *fn, const IRInstruction *in) {
     dv.is_ptr = 1;
     dv.is_unsigned = 1;
     dv.elem = la.is_ptr ? la.elem : ra.elem;
+    dv.address_space = la.is_ptr ? la.address_space : ra.address_space;
   } else if (kind_is_float(la.kind) || kind_is_float(ra.kind)) {
     dv.kind = (la.kind == MTLC_TYPE_FLOAT64 || ra.kind == MTLC_TYPE_FLOAT64)
                   ? MTLC_TYPE_FLOAT64
@@ -704,9 +981,10 @@ static SpvDesc result_desc(SpvFn *fn, const IRInstruction *in) {
   case IR_OP_ASSIGN:
     return operand_desc(fn, &in->lhs);
   case IR_OP_CAST:
-    return desc_from_typename(in->text);
+    return in->value_type ? desc_from_type(in->value_type)
+                          : desc_from_typename(in->text);
   case IR_OP_CALL:
-    return call_result_desc(in);
+    return call_result_desc(fn, in);
   default: {
     SpvDesc r = {0};
     r.kind = MTLC_TYPE_INT32;
@@ -792,12 +1070,72 @@ static MtlcTypeKind load_store_elem(SpvFn *fn, const IROperand *addr,
   }
   return elem;
 }
-static uint32_t typed_global_ptr(SpvFn *fn, uint32_t addr64, MtlcTypeKind elem) {
+static uint32_t typed_memory_ptr(SpvFn *fn, uint32_t addr64, MtlcTypeKind elem,
+                                 MtlcAddressSpace address_space) {
   SpvMod *m = fn->m;
-  uint32_t pt = type_pointer(m, SC_CrossWorkgroup, kind_type(m, elem));
+  int sc = spv_storage_class(address_space);
+  if (sc < 0) {
+    mod_error(m, "SPIR-V: invalid address space %d", (int)address_space);
+    return 0;
+  }
+  uint32_t pt = type_pointer(m, sc, kind_type(m, elem));
   uint32_t p = new_id(m);
   emitv(&m->functions, Op_ConvertUToPtr, 3, pt, p, addr64);
   return p;
+}
+
+static void emit_async_copy(SpvFn *fn, const IRInstruction *in) {
+  SpvMod *m = fn->m;
+  if (!in || in->argument_count != 2 ||
+      in->async_copy_element_count == 0) {
+    mod_error(m, "SPIR-V: invalid asynchronous-copy instruction");
+    return;
+  }
+  SpvDesc destination = operand_desc(fn, &in->arguments[0]);
+  SpvDesc source = operand_desc(fn, &in->arguments[1]);
+  if (!destination.is_ptr || !source.is_ptr ||
+      destination.address_space != MTLC_ADDRESS_SPACE_WORKGROUP ||
+      (source.address_space != MTLC_ADDRESS_SPACE_GLOBAL &&
+       source.address_space != MTLC_ADDRESS_SPACE_GENERIC) ||
+      destination.elem != source.elem || kind_bits(destination.elem) <= 0 ||
+      (kind_bits(destination.elem) & 7) != 0) {
+    mod_error(m,
+              "SPIR-V: async copy requires matching global-to-workgroup scalar pointers");
+    return;
+  }
+  uint32_t destination_base =
+      materialize(fn, &in->arguments[0], MTLC_TYPE_POINTER);
+  uint32_t source_base =
+      materialize(fn, &in->arguments[1], MTLC_TYPE_POINTER);
+  uint32_t u64 = type_int(m, 64);
+  uint32_t element_type = kind_type(m, destination.elem);
+  size_t element_size = (size_t)kind_bits(destination.elem) / 8u;
+  for (uint32_t element = 0; element < in->async_copy_element_count;
+       element++) {
+    size_t byte_offset = (size_t)element * element_size;
+    uint32_t destination_address = destination_base;
+    uint32_t source_address = source_base;
+    if (byte_offset != 0) {
+      uint32_t offset =
+          const_scalar_int(m, MTLC_TYPE_UINT64, (long long)byte_offset);
+      destination_address = new_id(m);
+      source_address = new_id(m);
+      emitv(&m->functions, Op_IAdd, 4, u64, destination_address,
+            destination_base, offset);
+      emitv(&m->functions, Op_IAdd, 4, u64, source_address, source_base,
+            offset);
+    }
+    uint32_t destination_pointer = typed_memory_ptr(
+        fn, destination_address, destination.elem,
+        MTLC_ADDRESS_SPACE_WORKGROUP);
+    uint32_t source_pointer = typed_memory_ptr(
+        fn, source_address, source.elem, source.address_space);
+    uint32_t value = new_id(m);
+    emitv(&m->functions, Op_Load, 5, element_type, value, source_pointer,
+          (unsigned)MemAccess_Aligned, (unsigned)element_size);
+    emitv(&m->functions, Op_Store, 4, destination_pointer, value,
+          (unsigned)MemAccess_Aligned, (unsigned)element_size);
+  }
 }
 
 /* ============================ op lowering ============================ */
@@ -910,8 +1248,9 @@ static void emit_unary(SpvFn *fn, const IRInstruction *in) {
 static void emit_load(SpvFn *fn, const IRInstruction *in) {
   SpvMod *m = fn->m;
   MtlcTypeKind elem = load_store_elem(fn, &in->lhs, in);
+  SpvDesc ad = operand_desc(fn, &in->lhs);
   uint32_t addr = materialize(fn, &in->lhs, MTLC_TYPE_POINTER);
-  uint32_t p = typed_global_ptr(fn, addr, elem);
+  uint32_t p = typed_memory_ptr(fn, addr, elem, ad.address_space);
   uint32_t et = kind_type(m, elem);
   uint32_t v = new_id(m);
   int align = kind_bits(elem) / 8;
@@ -923,16 +1262,22 @@ static void emit_load(SpvFn *fn, const IRInstruction *in) {
 static void emit_store(SpvFn *fn, const IRInstruction *in) {
   SpvMod *m = fn->m;
   MtlcTypeKind elem = load_store_elem(fn, &in->dest, in);
+  SpvDesc ad = operand_desc(fn, &in->dest);
   uint32_t addr = materialize(fn, &in->dest, MTLC_TYPE_POINTER);
   uint32_t val = materialize(fn, &in->lhs, elem);
-  uint32_t p = typed_global_ptr(fn, addr, elem);
+  if (ad.address_space == MTLC_ADDRESS_SPACE_CONSTANT) {
+    mod_error(m, "SPIR-V: store to constant address space");
+    return;
+  }
+  uint32_t p = typed_memory_ptr(fn, addr, elem, ad.address_space);
   int align = kind_bits(elem) / 8;
   emitv(&m->functions, Op_Store, 4, p, val, (unsigned)MemAccess_Aligned,
         (unsigned)align);
 }
 
 static void emit_cast(SpvFn *fn, const IRInstruction *in) {
-  SpvDesc target = desc_from_typename(in->text);
+  SpvDesc target = in->value_type ? desc_from_type(in->value_type)
+                                  : desc_from_typename(in->text);
   uint32_t id = materialize(fn, &in->lhs, target.kind);
   if (in->dest.name) store_name(fn, in->dest.name, id);
 }
@@ -940,11 +1285,12 @@ static void emit_cast(SpvFn *fn, const IRInstruction *in) {
 static void emit_call(SpvFn *fn, const IRInstruction *in) {
   SpvMod *m = fn->m;
   const char *callee = in->text;
+  MtlcIntrinsic intrinsic = in->intrinsic;
   int bi = 0;
-  int comp = sreg_component(callee, &bi);
+  int comp = sreg_component(intrinsic, &bi);
   if (comp >= 0) {
     uint32_t var = builtin_var(m, bi);
-    track_builtin(fn, var);
+    track_builtin(fn, bi, var);
     uint32_t v3 = type_vec3_ulong(m);
     uint32_t u64 = type_int(m, 64);
     uint32_t loaded = new_id(m);
@@ -957,13 +1303,158 @@ static void emit_call(SpvFn *fn, const IRInstruction *in) {
     if (in->dest.name) store_name(fn, in->dest.name, r);
     return;
   }
-  if (callee && !strcmp(callee, "gpu_barrier")) {
-    uint32_t sc = const_u32(m, Scope_Workgroup);
-    uint32_t sem = const_u32(m, Sem_WorkgroupBarrier);
-    emitv(&m->functions, Op_ControlBarrier, 3, sc, sc, sem);
+  if (intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_LOCAL_ID ||
+      intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SIZE) {
+    int builtin = intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_LOCAL_ID
+                      ? BI_SubgroupLocalInvocationId
+                      : BI_SubgroupSize;
+    uint32_t var = builtin_var(m, builtin);
+    uint32_t u32 = type_int(m, 32);
+    uint32_t result = new_id(m);
+    track_builtin(fn, builtin, var);
+    m->use_subgroups = 1;
+    emitv(&m->functions, Op_Load, 3, u32, result, var);
+    if (in->dest.name) store_name(fn, in->dest.name, result);
     return;
   }
-  if (callee && !strcmp(callee, "h2f") && in->argument_count >= 1) {
+  if ((intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_BROADCAST_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_BROADCAST_F32) &&
+      in->argument_count >= 2) {
+    MtlcTypeKind value_kind =
+        intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_BROADCAST_F32
+            ? MTLC_TYPE_FLOAT32
+            : MTLC_TYPE_UINT32;
+    uint32_t result_type = kind_type(m, value_kind);
+    uint32_t value = materialize(fn, &in->arguments[0], value_kind);
+    uint32_t source_lane =
+        materialize(fn, &in->arguments[1], MTLC_TYPE_UINT32);
+    uint32_t result = new_id(m);
+    uint32_t scope = const_u32(m, Scope_Subgroup);
+    m->use_subgroups = 1;
+    emitv(&m->functions, Op_GroupBroadcast, 5, result_type, result, scope,
+          value, source_lane);
+    if (in->dest.name) store_name(fn, in->dest.name, result);
+    return;
+  }
+  if (intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SHUFFLE_U32 ||
+      intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SHUFFLE_F32) {
+    mod_error(m,
+              "SPIR-V OpenCL 2.0 does not provide non-uniform subgroup "
+              "shuffle; select a profile with GroupNonUniformShuffle");
+    return;
+  }
+  if (intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_BALLOT_WORD &&
+      in->argument_count >= 2) {
+    uint32_t predicate_value =
+        materialize(fn, &in->arguments[0], MTLC_TYPE_BOOL);
+    uint32_t word =
+        materialize(fn, &in->arguments[1], MTLC_TYPE_UINT32);
+    uint32_t u32 = type_int(m, 32);
+    uint32_t bt = type_bool(m);
+    uint32_t predicate = new_id(m);
+    uint32_t v4u32 = type_vec4_uint(m);
+    uint32_t ballot = new_id(m);
+    uint32_t valid = new_id(m);
+    uint32_t safe_word = new_id(m);
+    uint32_t extracted = new_id(m);
+    uint32_t result = new_id(m);
+    uint32_t zero = const_u32(m, 0);
+    uint32_t four = const_u32(m, 4);
+    emitv(&m->functions, Op_INotEqual, 4, bt, predicate,
+          predicate_value, const_scalar_int(m, MTLC_TYPE_BOOL, 0));
+    m->use_subgroups = 1;
+    m->use_subgroup_ballot = 1;
+    emitv(&m->functions, Op_SubgroupBallotKHR, 3,
+          v4u32, ballot, predicate);
+    emitv(&m->functions, Op_ULessThan, 4, bt, valid, word, four);
+    /* Vector extraction is undefined for an out-of-range index. Select zero
+     * before extraction and then zero the observable result for word >= 4. */
+    emitv(&m->functions, Op_Select, 5, u32, safe_word, valid, word, zero);
+    emitv(&m->functions, Op_VectorExtractDynamic, 4,
+          u32, extracted, ballot, safe_word);
+    emitv(&m->functions, Op_Select, 5,
+          u32, result, valid, extracted, zero);
+    if (in->dest.name) store_name(fn, in->dest.name, result);
+    return;
+  }
+  if ((intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_ANY ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_ALL) &&
+      in->argument_count >= 1) {
+    uint32_t predicate_value =
+        materialize(fn, &in->arguments[0], MTLC_TYPE_BOOL);
+    uint32_t result_type = type_bool(m);
+    uint32_t predicate = new_id(m);
+    uint32_t vote_result = new_id(m);
+    uint32_t result = new_id(m);
+    emitv(&m->functions, Op_INotEqual, 4, result_type, predicate,
+          predicate_value, const_scalar_int(m, MTLC_TYPE_BOOL, 0));
+    m->use_subgroups = 1;
+    m->use_subgroup_vote = 1;
+    emitv(&m->functions,
+          intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_ANY
+              ? Op_SubgroupAnyKHR
+              : Op_SubgroupAllKHR,
+          3, result_type, vote_result, predicate);
+    emitv(&m->functions, Op_Select, 5,
+          kind_type(m, MTLC_TYPE_BOOL), result, vote_result,
+          const_scalar_int(m, MTLC_TYPE_BOOL, 1),
+          const_scalar_int(m, MTLC_TYPE_BOOL, 0));
+    if (in->dest.name) store_name(fn, in->dest.name, result);
+    return;
+  }
+  if ((intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_ADD_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_ADD_F32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MIN_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MIN_F32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MAX_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MAX_F32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_INCLUSIVE_ADD_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_INCLUSIVE_ADD_F32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_EXCLUSIVE_ADD_U32 ||
+       intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_EXCLUSIVE_ADD_F32) &&
+      in->argument_count >= 1) {
+    int is_float = intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_ADD_F32 ||
+                   intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MIN_F32 ||
+                   intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MAX_F32 ||
+                   intrinsic ==
+                       MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_INCLUSIVE_ADD_F32 ||
+                   intrinsic ==
+                       MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_EXCLUSIVE_ADD_F32;
+    int is_min = intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MIN_U32 ||
+                 intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MIN_F32;
+    int is_max = intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MAX_U32 ||
+                 intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_REDUCE_MAX_F32;
+    unsigned group_operation =
+        (intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_INCLUSIVE_ADD_U32 ||
+         intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_INCLUSIVE_ADD_F32)
+            ? 1u
+        : (intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_EXCLUSIVE_ADD_U32 ||
+           intrinsic == MTLC_INTRINSIC_GPU_SUBGROUP_SCAN_EXCLUSIVE_ADD_F32)
+            ? 2u
+            : 0u;
+    unsigned opcode = is_min ? (is_float ? Op_GroupFMin : Op_GroupUMin)
+                      : is_max ? (is_float ? Op_GroupFMax : Op_GroupUMax)
+                               : (is_float ? Op_GroupFAdd : Op_GroupIAdd);
+    MtlcTypeKind value_kind = is_float ? MTLC_TYPE_FLOAT32 : MTLC_TYPE_UINT32;
+    uint32_t result_type = kind_type(m, value_kind);
+    uint32_t value = materialize(fn, &in->arguments[0], value_kind);
+    uint32_t result = new_id(m);
+    uint32_t scope = const_u32(m, Scope_Subgroup);
+    m->use_subgroups = 1;
+    /* GroupOperation is a literal: Reduce=0, InclusiveScan=1,
+     * ExclusiveScan=2. */
+    emitv(&m->functions, opcode, 5, result_type, result, scope,
+          group_operation, value);
+    if (in->dest.name) store_name(fn, in->dest.name, result);
+    return;
+  }
+  if (intrinsic == MTLC_INTRINSIC_GPU_WORKGROUP_BARRIER) {
+    emit_workgroup_barrier(fn, MTLC_MEMORY_ORDER_SEQ_CST,
+                           MTLC_MEMORY_REGION_WORKGROUP);
+    return;
+  }
+  if (intrinsic == MTLC_INTRINSIC_GPU_F16_BITS_TO_F32 &&
+      in->argument_count >= 1) {
     /* reinterpret a uint16 fp16 bit-pattern (arrives zero-extended in an int)
      * as float32: truncate to 16 bits, bitcast to half, convert to float. */
     uint32_t a = materialize(fn, &in->arguments[0], MTLC_TYPE_UINT32);
@@ -979,7 +1470,8 @@ static void emit_call(SpvFn *fn, const IRInstruction *in) {
     if (in->dest.name) store_name(fn, in->dest.name, r);
     return;
   }
-  if (callee && !strcmp(callee, "f2h") && in->argument_count >= 1) {
+  if (intrinsic == MTLC_INTRINSIC_GPU_F32_TO_F16_BITS &&
+      in->argument_count >= 1) {
     uint32_t a = materialize(fn, &in->arguments[0], MTLC_TYPE_FLOAT32);
     uint32_t h = type_float(m, 16);
     uint32_t i16 = type_int(m, 16);
@@ -993,45 +1485,171 @@ static void emit_call(SpvFn *fn, const IRInstruction *in) {
     if (in->dest.name) store_name(fn, in->dest.name, r);
     return;
   }
-  if (is_math_intrinsic(callee) && in->argument_count >= 1) {
+  if (is_math_intrinsic(intrinsic) && in->argument_count >= 1) {
     uint32_t a = materialize(fn, &in->arguments[0], MTLC_TYPE_FLOAT32);
     uint32_t f32 = type_float(m, 32);
     int num;
-    if (!strcmp(callee, "sqrtf")) num = CL_sqrt;
-    else if (!strcmp(callee, "rsqrtf")) num = CL_rsqrt;
-    else if (!strcmp(callee, "fabsf")) num = CL_fabs;
-    else if (!strcmp(callee, "sinf")) num = CL_sin;
-    else if (!strcmp(callee, "cosf")) num = CL_cos;
-    else if (!strcmp(callee, "logf")) num = CL_log;
+    if (intrinsic == MTLC_INTRINSIC_GPU_SQRT_F32) num = CL_sqrt;
+    else if (intrinsic == MTLC_INTRINSIC_GPU_RSQRT_F32) num = CL_rsqrt;
+    else if (intrinsic == MTLC_INTRINSIC_GPU_ABS_F32) num = CL_fabs;
+    else if (intrinsic == MTLC_INTRINSIC_GPU_SIN_F32) num = CL_sin;
+    else if (intrinsic == MTLC_INTRINSIC_GPU_COS_F32) num = CL_cos;
+    else if (intrinsic == MTLC_INTRINSIC_GPU_LOG_F32) num = CL_log;
     else num = CL_exp;
     uint32_t r = new_id(m);
     emitv(&m->functions, Op_ExtInst, 5, f32, r, m->opencl_ext, (unsigned)num, a);
     if (in->dest.name) store_name(fn, in->dest.name, r);
     return;
   }
-  if (is_atomic_intrinsic(callee) && in->argument_count >= 3) {
-    int is64 = !strcmp(callee, "atomic_min_u64");
-    int isadd = !strcmp(callee, "atomic_add_u32");
+  if (is_atomic_intrinsic(intrinsic) &&
+      in->argument_count >= (size_t)ir_intrinsic_arity(intrinsic)) {
+    int is64 =
+        ir_intrinsic_atomic_value_kind(intrinsic) == MTLC_TYPE_UINT64;
+    int is_cas = ir_intrinsic_is_compare_exchange(intrinsic);
+    int is_load = ir_intrinsic_is_atomic_load(intrinsic);
+    int is_store = ir_intrinsic_is_atomic_store(intrinsic);
     MtlcTypeKind vk = is64 ? MTLC_TYPE_UINT64 : MTLC_TYPE_UINT32;
     int elemsz = is64 ? 8 : 4;
     uint32_t buf = materialize(fn, &in->arguments[0], MTLC_TYPE_POINTER);
     uint32_t idx = materialize(fn, &in->arguments[1], MTLC_TYPE_INT64);
-    uint32_t val = materialize(fn, &in->arguments[2], vk);
+    uint32_t val =
+        is_load ? 0 : materialize(fn, &in->arguments[2], vk);
     uint32_t u64 = type_int(m, 64);
     uint32_t off = new_id(m);
     emitv(&m->functions, Op_IMul, 4, u64, off, idx,
           const_scalar_int(m, MTLC_TYPE_INT64, elemsz));
     uint32_t addr = new_id(m);
     emitv(&m->functions, Op_IAdd, 4, u64, addr, buf, off);
-    uint32_t p = typed_global_ptr(fn, addr, vk);
+    int scope_value = spv_atomic_scope(in->memory_scope);
+    int semantics_value =
+        spv_atomic_semantics(in->memory_order, in->address_space);
+    int failure_semantics_value =
+        is_cas ? spv_atomic_semantics(in->failure_memory_order,
+                                      in->address_space)
+               : 0;
+    if (scope_value < 0 || semantics_value < 0 ||
+        (is_load && in->memory_order != MTLC_MEMORY_ORDER_RELAXED &&
+         in->memory_order != MTLC_MEMORY_ORDER_ACQUIRE &&
+         in->memory_order != MTLC_MEMORY_ORDER_SEQ_CST) ||
+        (is_store && in->memory_order != MTLC_MEMORY_ORDER_RELAXED &&
+         in->memory_order != MTLC_MEMORY_ORDER_RELEASE &&
+         in->memory_order != MTLC_MEMORY_ORDER_SEQ_CST) ||
+        (is_cas && (failure_semantics_value < 0 ||
+                    !spv_compare_exchange_failure_valid(
+                        in->memory_order, in->failure_memory_order))) ||
+        in->address_space == MTLC_ADDRESS_SPACE_CONSTANT ||
+        in->address_space == MTLC_ADDRESS_SPACE_PRIVATE ||
+        (in->address_space == MTLC_ADDRESS_SPACE_WORKGROUP &&
+         in->memory_scope > MTLC_MEMORY_SCOPE_WORKGROUP)) {
+      mod_error(m,
+                "SPIR-V: invalid atomic memory contract (space=%d success=%d failure=%d scope=%d)",
+                (int)in->address_space, (int)in->memory_order,
+                (int)in->failure_memory_order, (int)in->memory_scope);
+      return;
+    }
+    uint32_t p = typed_memory_ptr(fn, addr, vk, in->address_space);
     uint32_t vt = kind_type(m, vk);
-    uint32_t sc = const_u32(m, Scope_Device);
-    uint32_t sem = const_u32(m, Sem_None);
-    uint32_t r = new_id(m);
-    emitv(&m->functions, isadd ? Op_AtomicIAdd : Op_AtomicUMin, 6, vt, r, p, sc,
-          sem, val);
+    uint32_t sc = const_u32(m, scope_value);
+    uint32_t sem = const_u32(m, semantics_value);
+    uint32_t r = 0;
+    if (is_load) {
+      r = new_id(m);
+      emitv(&m->functions, Op_AtomicLoad, 5, vt, r, p, sc, sem);
+    } else if (is_store) {
+      emitv(&m->functions, Op_AtomicStore, 4, p, sc, sem, val);
+    } else if (is_cas) {
+      r = new_id(m);
+      uint32_t desired = materialize(fn, &in->arguments[3], vk);
+      uint32_t failure_sem = const_u32(m, failure_semantics_value);
+      /* SPIR-V orders these operands as desired value, then comparator. */
+      emitv(&m->functions, Op_AtomicCompareExchange, 8, vt, r, p, sc, sem,
+            failure_sem, desired, val);
+    } else {
+      r = new_id(m);
+      unsigned opcode =
+          intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_ADD_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_ADD_U64
+              ? Op_AtomicIAdd
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_SUB_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_SUB_U64
+              ? Op_AtomicISub
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_MIN_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_MIN_U64
+              ? Op_AtomicUMin
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_MAX_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_MAX_U64
+              ? Op_AtomicUMax
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_AND_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_AND_U64
+              ? Op_AtomicAnd
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_OR_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_OR_U64
+              ? Op_AtomicOr
+          : intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_XOR_U32 ||
+                  intrinsic == MTLC_INTRINSIC_GPU_ATOMIC_XOR_U64
+              ? Op_AtomicXor
+              : Op_AtomicExchange;
+      emitv(&m->functions, opcode, 6, vt, r, p, sc, sem, val);
+    }
     if (is64) m->use_atomics64 = 1;
-    if (in->dest.name) store_name(fn, in->dest.name, r);
+    if (in->dest.name && !is_store) store_name(fn, in->dest.name, r);
+    return;
+  }
+  if (intrinsic == MTLC_INTRINSIC_NONE) {
+    long callee_index = spv_function_index(m->program, callee);
+    const IRModuleSymbol *callee_symbol =
+        ir_program_lookup_symbol(m->program, callee);
+    if (callee_index < 0 || !callee_symbol ||
+        callee_symbol->kind != IR_MODSYM_FUNCTION ||
+        !m->device_function_ids[(size_t)callee_index]) {
+      mod_error(m, "SPIR-V: device call target '%s' has no definition",
+                callee ? callee : "?");
+      return;
+    }
+    IRFunction *callee_function =
+        m->program->functions[(size_t)callee_index];
+    if (in->argument_count != callee_function->parameter_count ||
+        in->argument_count != callee_symbol->param_count) {
+      mod_error(m,
+                "SPIR-V: device call '%s' expects %zu arguments, received %zu",
+                callee, callee_symbol->param_count, in->argument_count);
+      return;
+    }
+    const MtlcType *return_type = spv_function_return_type(
+        m->program, callee_function, callee_symbol);
+    int returns_void =
+        spv_type_is_void(return_type, callee_function->return_type_name);
+    SpvDesc return_desc = returns_void
+                              ? (SpvDesc){.kind = MTLC_TYPE_VOID}
+                              : (return_type
+                                     ? desc_from_type(return_type)
+                                     : desc_from_typename(
+                                           callee_function->return_type_name));
+    uint32_t return_type_id =
+        returns_void ? type_void(m) : kind_type(m, return_desc.kind);
+    uint32_t result_id = new_id(m);
+    Wb call = {0};
+    wb_push(&call, return_type_id);
+    wb_push(&call, result_id);
+    wb_push(&call, m->device_function_ids[(size_t)callee_index]);
+    for (size_t a = 0; a < in->argument_count && !m->error; a++) {
+      SpvDesc argument_desc = desc_from_type(callee_symbol->param_types[a]);
+      wb_push(&call,
+              materialize(fn, &in->arguments[a], argument_desc.kind));
+    }
+    if (!m->error) {
+      emit_ops(&m->functions, Op_FunctionCall, &call);
+      fn->builtin_mask |=
+          m->function_builtin_masks[(size_t)callee_index];
+      if (returns_void) {
+        if (in->dest.name) {
+          mod_error(m, "SPIR-V: void device call '%s' has a result", callee);
+        }
+      } else if (in->dest.name) {
+        store_name(fn, in->dest.name, result_id);
+      }
+    }
+    wb_free(&call);
     return;
   }
   mod_error(m, "SPIR-V: unsupported call '%s'", callee ? callee : "?");
@@ -1043,8 +1661,46 @@ static void emit_body_instr(SpvFn *fn, const IRInstruction *in) {
   switch (in->op) {
   case IR_OP_NOP:
   case IR_OP_LABEL:
+  case IR_OP_ADDRESS_SPACE_ALLOC:
   case IR_OP_DECLARE_LOCAL:
     break; /* declarations handled in the pre-pass */
+  case IR_OP_BARRIER:
+    if (in->memory_scope != MTLC_MEMORY_SCOPE_WORKGROUP) {
+      mod_error(fn->m, "SPIR-V: unsupported execution scope on barrier");
+      break;
+    }
+    emit_workgroup_barrier(fn, in->memory_order, in->memory_regions);
+    break;
+  case IR_OP_ASYNC_COPY:
+    /* OpenCL 2.0 has no enabled device-side async-copy capability in this
+     * profile. Replay synchronously; commit/wait below are consequently
+     * completion no-ops with identical observable semantics. */
+    emit_async_copy(fn, in);
+    break;
+  case IR_OP_ASYNC_COMMIT:
+  case IR_OP_ASYNC_WAIT:
+    break;
+  case IR_OP_TENSOR_MMA:
+    mod_error(fn->m,
+              "SPIR-V OpenCL 2.0 profile has no cooperative-matrix capability; tensor MMA requires a newer explicit device profile");
+    break;
+  case IR_OP_TENSOR_MATMUL:
+    mod_error(fn->m,
+              "SPIR-V OpenCL 2.0 profile has no exact bounded matrix-region lowering; tensor_matmul requires explicit cooperative-matrix and exact edge support");
+    break;
+  case IR_OP_TENSOR_EPILOGUE:
+    mod_error(fn->m,
+              "SPIR-V OpenCL 2.0 profile has no exact cooperative tensor-epilogue lowering; select a profile with ordered collective replay or native tensor epilogues");
+    break;
+  case IR_OP_TENSOR_TRANSFER:
+    mod_error(fn->m,
+              "SPIR-V OpenCL 2.0 profile has no multidimensional workgroup-transfer lowering; select a backend profile with exact tensor-transfer or cooperative-replay support");
+    break;
+  case IR_OP_TENSOR_COMMIT:
+    /* The current profile rejects the corresponding tensor operations above.
+     * A future cooperative-matrix backend may replay each MMA and keep this
+     * neutral residency marker as a no-op. */
+    break;
   case IR_OP_ASSIGN: {
     /* store lhs into dest, coerced to dest's declared kind */
     SpvBind *db = find_bind(fn, in->dest.name);
@@ -1072,10 +1728,12 @@ static void emit_body_instr(SpvFn *fn, const IRInstruction *in) {
     emit_call(fn, in);
     break;
   case IR_OP_ADDRESS_OF:
-    mod_error(fn->m, "SPIR-V: address-of (&local) not supported in kernels yet");
+    mod_error(fn->m,
+              "SPIR-V: address-of (&local) not supported in device functions yet");
     break;
   default:
-    mod_error(fn->m, "SPIR-V: unsupported IR opcode %d in kernel", in->op);
+    mod_error(fn->m, "SPIR-V: unsupported IR opcode %d in device function",
+              in->op);
     break;
   }
 }
@@ -1140,16 +1798,27 @@ static uint32_t branch_cond_bool(SpvFn *fn, const IRInstruction *term) {
 
 /* ---- pre-pass: register a descriptor for every named value ---- */
 static void register_values(SpvFn *fn, IRFunction *func) {
+  const IRModuleSymbol *function_symbol =
+      fn->m->program ? ir_program_lookup_symbol(fn->m->program, func->name) : NULL;
   for (size_t p = 0; p < func->parameter_count; p++) {
     if (!func->parameter_names || !func->parameter_names[p]) continue;
     const char *tn = func->parameter_types ? func->parameter_types[p] : NULL;
-    add_bind(fn, func->parameter_names[p], desc_from_typename(tn));
+    const MtlcType *pt = function_symbol &&
+                                 function_symbol->kind == IR_MODSYM_FUNCTION &&
+                                 p < function_symbol->param_count
+                             ? function_symbol->param_types[p]
+                             : NULL;
+    add_bind(fn, func->parameter_names[p],
+             pt ? desc_from_type(pt) : desc_from_typename(tn));
   }
   for (size_t i = 0; i < func->instruction_count; i++) {
     const IRInstruction *in = &func->instructions[i];
-    if (in->op == IR_OP_DECLARE_LOCAL) {
+    if (in->op == IR_OP_DECLARE_LOCAL ||
+        in->op == IR_OP_ADDRESS_SPACE_ALLOC) {
       if (in->dest.name && !find_bind(fn, in->dest.name)) {
-        add_bind(fn, in->dest.name, desc_from_typename(in->text));
+        add_bind(fn, in->dest.name,
+                 in->value_type ? desc_from_type(in->value_type)
+                                : desc_from_typename(in->text));
       }
       continue;
     }
@@ -1171,10 +1840,30 @@ static void register_values(SpvFn *fn, IRFunction *func) {
   }
 }
 
-/* ---- emit one kernel; returns its OpFunction id (0 on error) ---- */
-static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
+/* Emit one reachable GPU function. Kernels retain the OpenCL entry ABI;
+ * ordinary reachable functions use the same neutral scalar IR ABI internally. */
+static uint32_t emit_device_function(SpvMod *m, IRFunction *func,
+                                     size_t function_index) {
   SpvFn fn = {0};
   fn.m = m;
+  fn.function = func;
+  fn.function_index = function_index;
+  const IRModuleSymbol *function_symbol =
+      m->program ? ir_program_lookup_symbol(m->program, func->name) : NULL;
+  const MtlcType *return_type =
+      spv_function_return_type(m->program, func, function_symbol);
+  fn.returns_void =
+      spv_type_is_void(return_type, func ? func->return_type_name : NULL);
+  fn.return_desc =
+      fn.returns_void
+          ? (SpvDesc){.kind = MTLC_TYPE_VOID}
+          : (return_type ? desc_from_type(return_type)
+                         : desc_from_typename(func->return_type_name));
+  if (func->is_kernel && !fn.returns_void) {
+    mod_error(m, "SPIR-V: kernel '%s' must return void",
+              func->name ? func->name : "?");
+    return 0;
+  }
 
   /* ---- build basic blocks from the label/branch stream ---- */
   size_t count = func->instruction_count;
@@ -1210,8 +1899,38 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
 
   register_values(&fn, func);
 
+  /* OpenCL represents launch-sized local memory as a Workgroup pointer kernel
+   * argument. Select the most strictly aligned dynamic view as the hidden ABI
+   * pointee type; every view is then materialized from that same pointer-sized
+   * value, preserving the IR's intentional aliasing contract. */
+  const IRInstruction *dynamic_workgroup_abi_view = NULL;
+  size_t dynamic_workgroup_alignment = 0;
+  for (size_t i = 0; i < func->instruction_count && !m->error; i++) {
+    const IRInstruction *in = &func->instructions[i];
+    if (in->op != IR_OP_ADDRESS_SPACE_ALLOC ||
+        in->rhs.kind != IR_OPERAND_INT || in->rhs.int_value != 0) {
+      continue;
+    }
+    if (!func->is_kernel || !in->dest.name || !in->value_type ||
+        in->value_type->kind != MTLC_TYPE_POINTER ||
+        !in->value_type->base_type ||
+        in->address_space != MTLC_ADDRESS_SPACE_WORKGROUP ||
+        in->value_type->address_space != MTLC_ADDRESS_SPACE_WORKGROUP ||
+        mtlc_type_size(in->value_type->base_type) == 0) {
+      mod_error(m, "SPIR-V: invalid dynamic workgroup view in '%s'",
+                func->name ? func->name : "?");
+      break;
+    }
+    size_t alignment = mtlc_type_alignment(in->value_type->base_type);
+    if (!dynamic_workgroup_abi_view ||
+        alignment > dynamic_workgroup_alignment) {
+      dynamic_workgroup_abi_view = in;
+      dynamic_workgroup_alignment = alignment;
+    }
+  }
+
   /* ---- ids: entry, one label per IR block, a shared fall-off-the-end exit ---- */
-  uint32_t func_id = new_id(m);
+  uint32_t func_id = m->device_function_ids[function_index];
   uint32_t entry_id = new_id(m);
   uint32_t exit_id = new_id(m);
   int exit_used = 0;
@@ -1220,27 +1939,54 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
 
   /* ---- parameter + function types ---- */
   uint32_t voidt = type_void(m);
-  uint32_t *ptypes = calloc(func->parameter_count + 1, sizeof(uint32_t));
-  uint32_t *pids = calloc(func->parameter_count + 1, sizeof(uint32_t));
-  SpvDesc *pdesc = calloc(func->parameter_count + 1, sizeof(SpvDesc));
+  uint32_t function_return_type =
+      fn.returns_void ? voidt : kind_type(m, fn.return_desc.kind);
+  size_t total_parameter_count =
+      func->parameter_count + (dynamic_workgroup_abi_view ? 1u : 0u);
+  size_t dynamic_workgroup_parameter = func->parameter_count;
+  uint32_t *ptypes = calloc(total_parameter_count + 1, sizeof(uint32_t));
+  uint32_t *pids = calloc(total_parameter_count + 1, sizeof(uint32_t));
+  SpvDesc *pdesc = calloc(total_parameter_count + 1, sizeof(SpvDesc));
   for (size_t p = 0; p < func->parameter_count; p++) {
     const char *tn = func->parameter_types ? func->parameter_types[p] : NULL;
-    SpvDesc d = desc_from_typename(tn);
+    const MtlcType *pt = function_symbol &&
+                                 function_symbol->kind == IR_MODSYM_FUNCTION &&
+                                 p < function_symbol->param_count
+                             ? function_symbol->param_types[p]
+                             : NULL;
+    SpvDesc d = pt ? desc_from_type(pt) : desc_from_typename(tn);
     pdesc[p] = d;
-    if (d.is_ptr) {
-      ptypes[p] = type_pointer(m, SC_CrossWorkgroup, kind_type(m, d.elem));
+    if (func->is_kernel && d.is_ptr) {
+      int sc = spv_storage_class(d.address_space);
+      if (sc < 0 || d.address_space == MTLC_ADDRESS_SPACE_PRIVATE ||
+          d.address_space == MTLC_ADDRESS_SPACE_CONSTANT) {
+        mod_error(m,
+                  "SPIR-V OpenCL 2.0: kernel parameter %zu has unsupported address space %d",
+                  p, (int)d.address_space);
+        sc = SC_CrossWorkgroup;
+      }
+      ptypes[p] = type_pointer(m, sc, kind_type(m, d.elem));
     } else {
       ptypes[p] = kind_type(m, d.kind);
     }
     pids[p] = new_id(m);
   }
+  if (dynamic_workgroup_abi_view) {
+    SpvDesc dynamic_desc =
+        desc_from_type(dynamic_workgroup_abi_view->value_type);
+    ptypes[dynamic_workgroup_parameter] =
+        type_pointer(m, SC_Workgroup, kind_type(m, dynamic_desc.elem));
+    pids[dynamic_workgroup_parameter] = new_id(m);
+  }
   Wb ftops = {0};
-  wb_push(&ftops, voidt);
-  for (size_t p = 0; p < func->parameter_count; p++) wb_push(&ftops, ptypes[p]);
+  wb_push(&ftops, function_return_type);
+  for (size_t p = 0; p < total_parameter_count; p++)
+    wb_push(&ftops, ptypes[p]);
   /* intern the function type by structural key */
   char ftkey[256];
-  int kn = snprintf(ftkey, sizeof(ftkey), "fn:%u", voidt);
-  for (size_t p = 0; p < func->parameter_count && kn < (int)sizeof(ftkey) - 12; p++) {
+  int kn = snprintf(ftkey, sizeof(ftkey), "fn:%u", function_return_type);
+  for (size_t p = 0;
+       p < total_parameter_count && kn < (int)sizeof(ftkey) - 12; p++) {
     kn += snprintf(ftkey + kn, sizeof(ftkey) - (size_t)kn, ":%u", ptypes[p]);
   }
   uint32_t functype = cache_get(m, ftkey);
@@ -1248,8 +1994,9 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
     functype = new_id(m);
     Wb ft = {0};
     wb_push(&ft, functype);
-    wb_push(&ft, voidt);
-    for (size_t p = 0; p < func->parameter_count; p++) wb_push(&ft, ptypes[p]);
+    wb_push(&ft, function_return_type);
+    for (size_t p = 0; p < total_parameter_count; p++)
+      wb_push(&ft, ptypes[p]);
     emit_ops(&m->typesconsts, Op_TypeFunction, &ft);
     wb_free(&ft);
     cache_put(m, ftkey, functype);
@@ -1257,8 +2004,9 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
   wb_free(&ftops);
 
   /* ---- OpFunction + parameters ---- */
-  emitv(&m->functions, Op_Function, 4, voidt, func_id, 0u, functype);
-  for (size_t p = 0; p < func->parameter_count; p++) {
+  emitv(&m->functions, Op_Function, 4, function_return_type, func_id, 0u,
+        functype);
+  for (size_t p = 0; p < total_parameter_count; p++) {
     emitv(&m->functions, Op_FunctionParameter, 2, ptypes[p], pids[p]);
   }
 
@@ -1271,12 +2019,90 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
     b->var_id = new_id(m);
     emitv(&m->functions, Op_Variable, 3, pt, b->var_id, (unsigned)SC_Function);
   }
+  /* Declare every static allocation before emitting entry-block executable
+   * instructions. Workgroup variables live at module scope; private variables
+   * use Function storage and must be the first instructions in the entry
+   * block. Keep their ids by IR instruction so the materialization pass below
+   * can convert them into the neutral pointer-sized value model. */
+  uint32_t *allocation_variables =
+      calloc(func->instruction_count ? func->instruction_count : 1,
+             sizeof(uint32_t));
+  for (size_t i = 0; i < func->instruction_count && !m->error; i++) {
+    const IRInstruction *in = &func->instructions[i];
+    if (in->op != IR_OP_ADDRESS_SPACE_ALLOC) continue;
+    int is_dynamic =
+        in->rhs.kind == IR_OPERAND_INT && in->rhs.int_value == 0;
+    if (!func->is_kernel || !in->dest.name || !in->value_type ||
+        in->value_type->kind != MTLC_TYPE_POINTER ||
+        !in->value_type->base_type || in->rhs.kind != IR_OPERAND_INT ||
+        in->rhs.int_value < 0 || in->rhs.int_value > UINT32_MAX ||
+        (in->address_space != MTLC_ADDRESS_SPACE_WORKGROUP &&
+         in->address_space != MTLC_ADDRESS_SPACE_PRIVATE) ||
+        in->value_type->address_space != in->address_space ||
+        (is_dynamic && in->address_space != MTLC_ADDRESS_SPACE_WORKGROUP)) {
+      mod_error(m, "SPIR-V: invalid address-space allocation in '%s'",
+                func->name ? func->name : "?");
+      break;
+    }
+    SpvBind *binding = find_bind(&fn, in->dest.name);
+    SpvDesc descriptor = desc_from_type(in->value_type);
+    int storage_class = spv_storage_class(in->address_space);
+    if (!binding || !descriptor.is_ptr || storage_class < 0 ||
+        mtlc_type_size(in->value_type->base_type) == 0) {
+      mod_error(m, "SPIR-V: allocation '%s' has an unsupported element type",
+                in->dest.name);
+      break;
+    }
+    if (is_dynamic) continue;
+    uint32_t element_type = kind_type(m, descriptor.elem);
+    uint32_t array_type =
+        type_array(m, element_type, (uint32_t)in->rhs.int_value);
+    uint32_t pointer_type = type_pointer(m, storage_class, array_type);
+    uint32_t variable = new_id(m);
+    Wb *variable_section = storage_class == SC_Function ? &m->functions
+                                                        : &m->typesconsts;
+    emitv(variable_section, Op_Variable, 3, pointer_type, variable,
+          (unsigned)storage_class);
+    allocation_variables[i] = variable;
+  }
+  /* Materialize neutral allocations. Dynamic workgroup views all receive the
+   * same hidden Workgroup parameter. Pointers remain 64-bit values in the IR
+   * value model, just like explicit kernel pointer parameters; typed accesses
+   * convert them back with the exact storage class in their descriptor. */
+  for (size_t i = 0; i < func->instruction_count && !m->error; i++) {
+    const IRInstruction *in = &func->instructions[i];
+    if (in->op != IR_OP_ADDRESS_SPACE_ALLOC) continue;
+    SpvBind *binding = find_bind(&fn, in->dest.name);
+    int is_dynamic = in->rhs.int_value == 0;
+    if (is_dynamic) {
+      if (!dynamic_workgroup_abi_view ||
+          dynamic_workgroup_parameter >= total_parameter_count) {
+        mod_error(m, "SPIR-V: dynamic workgroup ABI was not materialized");
+        break;
+      }
+      uint32_t as_integer = new_id(m);
+      emitv(&m->functions, Op_ConvertPtrToU, 3, type_int(m, 64),
+            as_integer, pids[dynamic_workgroup_parameter]);
+      emitv(&m->functions, Op_Store, 2, binding->var_id, as_integer);
+      continue;
+    }
+    uint32_t variable = allocation_variables[i];
+    if (!variable) {
+      mod_error(m, "SPIR-V: allocation '%s' was not declared", in->dest.name);
+      break;
+    }
+    uint32_t as_integer = new_id(m);
+    emitv(&m->functions, Op_ConvertPtrToU, 3, type_int(m, 64), as_integer,
+          variable);
+    emitv(&m->functions, Op_Store, 2, binding->var_id, as_integer);
+  }
+  free(allocation_variables);
   /* store incoming parameters into their shadow variables */
   for (size_t p = 0; p < func->parameter_count; p++) {
     if (!func->parameter_names || !func->parameter_names[p]) continue;
     SpvBind *b = find_bind(&fn, func->parameter_names[p]);
     if (!b) continue;
-    if (pdesc[p].is_ptr) {
+    if (func->is_kernel && pdesc[p].is_ptr) {
       uint32_t u64 = type_int(m, 64);
       uint32_t asint = new_id(m);
       emitv(&m->functions, Op_ConvertPtrToU, 3, u64, asint, pids[p]);
@@ -1287,8 +2113,11 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
   }
   if (nblocks > 0) {
     emitv(&m->functions, Op_Branch, 1, block_id[0]);
-  } else {
+  } else if (fn.returns_void) {
     emitv(&m->functions, Op_Return, 0);
+  } else {
+    mod_error(m, "SPIR-V: non-void device function '%s' has no return",
+              func->name ? func->name : "?");
   }
 
   /* ---- one SPIR-V block per IR block, branches mapped directly ---- */
@@ -1302,7 +2131,22 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
     }
     const IRInstruction *term = bl->term;
     if (term && term->op == IR_OP_RETURN) {
-      emitv(&m->functions, Op_Return, 0);
+      if (fn.returns_void) {
+        if (term->lhs.kind != IR_OPERAND_NONE) {
+          mod_error(m, "SPIR-V: void device function '%s' returns a value",
+                    func->name ? func->name : "?");
+          break;
+        }
+        emitv(&m->functions, Op_Return, 0);
+      } else if (term->lhs.kind == IR_OPERAND_NONE) {
+        mod_error(m,
+                  "SPIR-V: non-void device function '%s' has an empty return",
+                  func->name ? func->name : "?");
+        break;
+      } else {
+        uint32_t value = materialize(&fn, &term->lhs, fn.return_desc.kind);
+        emitv(&m->functions, Op_ReturnValue, 1, value);
+      }
     } else if (term && term->op == IR_OP_JUMP) {
       long t = block_of_label(blocks, nblocks, term->text);
       if (t < 0) {
@@ -1323,7 +2167,13 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
       if (i + 1 < nblocks) {
         fall_id = block_id[i + 1];
       } else {
-        fall_id = exit_id; /* not-taken edge falls off the end -> return */
+        if (!fn.returns_void) {
+          mod_error(m,
+                    "SPIR-V: non-void device function '%s' can fall through",
+                    func->name ? func->name : "?");
+          break;
+        }
+        fall_id = exit_id;
         exit_used = 1;
       }
       uint32_t taken_id = block_id[taken];
@@ -1337,8 +2187,13 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
       /* fallthrough: continue into the next block, or return at the end */
       if (i + 1 < nblocks) {
         emitv(&m->functions, Op_Branch, 1, block_id[i + 1]);
-      } else {
+      } else if (fn.returns_void) {
         emitv(&m->functions, Op_Return, 0);
+      } else {
+        mod_error(m,
+                  "SPIR-V: non-void device function '%s' can fall through",
+                  func->name ? func->name : "?");
+        break;
       }
     }
   }
@@ -1349,14 +2204,23 @@ static uint32_t emit_kernel(SpvMod *m, IRFunction *func) {
   }
   emitv(&m->functions, Op_FunctionEnd, 0);
 
+  m->function_builtin_masks[function_index] = fn.builtin_mask;
+
   /* ---- entry point (with the BuiltIn Input vars this kernel touched) ---- */
-  if (!m->error) {
+  if (!m->error && func->is_kernel) {
     Wb ep = {0};
     wb_push(&ep, (uint32_t)ExecModel_Kernel);
     wb_push(&ep, func_id);
     wb_str(&ep, func->name ? func->name : "kernel");
-    for (size_t i = 0; i < fn.nused_builtins; i++) {
-      wb_push(&ep, fn.used_builtins[i]);
+    static const int gpu_builtins[] = {
+        BI_NumWorkgroups, BI_WorkgroupSize, BI_WorkgroupId,
+        BI_LocalInvocationId, BI_SubgroupSize,
+        BI_SubgroupLocalInvocationId};
+    for (size_t i = 0; i < sizeof(gpu_builtins) / sizeof(gpu_builtins[0]); i++) {
+      int builtin = gpu_builtins[i];
+      if (fn.builtin_mask & (UINT64_C(1) << builtin)) {
+        wb_push(&ep, builtin_var(m, builtin));
+      }
     }
     emit_ops(&m->entrypoints, Op_EntryPoint, &ep);
     wb_free(&ep);
@@ -1393,8 +2257,40 @@ int spirv_emit_program(IRProgram *program, CodeGenerator *generator, FILE *out,
     return 0;
   }
 
+  IRGpuCallGraph graph = {0};
+  char *graph_error = NULL;
+  if (!ir_program_build_gpu_call_graph(program, &graph, &graph_error)) {
+    if (error) {
+      *error = graph_error ? graph_error
+                           : strdup("SPIR-V: invalid GPU call graph");
+    } else {
+      free(graph_error);
+    }
+    return 0;
+  }
+
   SpvMod m = {0};
   m.next_id = 1;
+  m.program = program;
+  m.device_function_ids =
+      calloc(program->function_count ? program->function_count : 1,
+             sizeof(*m.device_function_ids));
+  m.function_builtin_masks =
+      calloc(program->function_count ? program->function_count : 1,
+             sizeof(*m.function_builtin_masks));
+  if (!m.device_function_ids || !m.function_builtin_masks) {
+    if (error) *error = strdup("out of memory emitting SPIR-V device functions");
+    ir_gpu_call_graph_destroy(&graph);
+    free(m.device_function_ids);
+    free(m.function_builtin_masks);
+    return 0;
+  }
+  /* Assign every reachable function id before emitting bodies. This keeps the
+   * call representation independent of definition order, while the shared
+   * postorder still emits callees first for deterministic modules. */
+  for (size_t oi = 0; oi < graph.count; oi++) {
+    m.device_function_ids[graph.order[oi]] = new_id(&m);
+  }
 
   /* OpenCL.std extended instruction set (imported once, used by the f32 math
    * intrinsics; harmless if unused). */
@@ -1407,8 +2303,9 @@ int spirv_emit_program(IRProgram *program, CodeGenerator *generator, FILE *out,
     wb_free(&ei);
   }
 
-  for (size_t i = 0; i < program->function_count && !m.error; i++) {
-    emit_kernel(&m, program->functions[i]);
+  for (size_t oi = 0; oi < graph.count && !m.error; oi++) {
+    size_t i = graph.order[oi];
+    emit_device_function(&m, program->functions[i], i);
   }
 
   if (m.error) {
@@ -1421,11 +2318,29 @@ int spirv_emit_program(IRProgram *program, CodeGenerator *generator, FILE *out,
   emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Addresses);
   emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Kernel);
   emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Int64);
+  if (m.use_subgroups)
+    emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Groups);
   if (m.use_int8) emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Int8);
   if (m.use_int16) emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Int16);
   if (m.use_float16) emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Float16);
   if (m.use_float64) emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Float64);
   if (m.use_atomics64) emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_Int64Atomics);
+  if (m.use_subgroup_ballot)
+    emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_SubgroupBallotKHR);
+  if (m.use_subgroup_vote)
+    emitv(&m.caps, Op_Capability, 1, (unsigned)Cap_SubgroupVoteKHR);
+  if (m.use_subgroup_ballot) {
+    Wb extension = {0};
+    wb_str(&extension, "SPV_KHR_shader_ballot");
+    emit_ops(&m.caps, Op_Extension, &extension);
+    wb_free(&extension);
+  }
+  if (m.use_subgroup_vote) {
+    Wb extension = {0};
+    wb_str(&extension, "SPV_KHR_subgroup_vote");
+    emit_ops(&m.caps, Op_Extension, &extension);
+    wb_free(&extension);
+  }
 
   emitv(&m.memmodel, Op_MemoryModel, 2, (unsigned)AddrModel_Physical64,
         (unsigned)MemModel_OpenCL);
@@ -1454,5 +2369,8 @@ cleanup:
   wb_free(&m.functions);
   for (size_t i = 0; i < m.ncache; i++) free(m.cache[i].key);
   free(m.cache);
+  free(m.device_function_ids);
+  free(m.function_builtin_masks);
+  ir_gpu_call_graph_destroy(&graph);
   return m.error ? 0 : 1;
 }

@@ -421,6 +421,19 @@ static int ir_propagate_instruction_operands(IRTempValueMap *temp_map,
   }
 
   switch (instruction->op) {
+  case IR_OP_ASYNC_COPY:
+  case IR_OP_TENSOR_EPILOGUE:
+    for (size_t i = 0; i < instruction->argument_count; i++) {
+      if (!ir_try_propagate_operand(temp_map, symbol_map,
+                                    &instruction->arguments[i], changed)) {
+        return 0;
+      }
+    }
+    break;
+
+  case IR_OP_TENSOR_MMA:
+  case IR_OP_TENSOR_MATMUL:
+  case IR_OP_TENSOR_COMMIT:
   case IR_OP_STORE:
     if (!ir_try_propagate_operand(temp_map, symbol_map, &instruction->dest,
                                   changed) ||
@@ -2108,6 +2121,16 @@ int ir_instruction_has_side_effect(const IRInstruction *instruction) {
   }
 
   switch (instruction->op) {
+  case IR_OP_BARRIER:
+  case IR_OP_ASYNC_COPY:
+  case IR_OP_ASYNC_COMMIT:
+  case IR_OP_ASYNC_WAIT:
+  case IR_OP_TENSOR_TRANSFER:
+  case IR_OP_GPU_LAUNCH:
+  case IR_OP_TENSOR_MMA:
+  case IR_OP_TENSOR_MATMUL:
+  case IR_OP_TENSOR_EPILOGUE:
+  case IR_OP_TENSOR_COMMIT:
   case IR_OP_STORE:
   case IR_OP_CALL:
   case IR_OP_CALL_INDIRECT:

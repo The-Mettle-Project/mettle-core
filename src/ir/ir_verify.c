@@ -184,6 +184,7 @@ static int irv_instruction_deep_copy(IRInstruction *dst,
   dst->rhs = ir_operand_copy(&src->rhs);
   dst->text = src->text ? mettle_strdup(src->text) : NULL;
   dst->arguments = NULL;
+  dst->argument_types = NULL;
   dst->argument_count = 0;
   if (src->text && !dst->text) {
     return 0;
@@ -198,6 +199,15 @@ static int irv_instruction_deep_copy(IRInstruction *dst,
       dst->arguments[i] = ir_operand_copy(&src->arguments[i]);
     }
     dst->argument_count = src->argument_count;
+  }
+  if (src->argument_types && src->argument_count > 0) {
+    dst->argument_types =
+        malloc(src->argument_count * sizeof(*dst->argument_types));
+    if (!dst->argument_types) {
+      return 0;
+    }
+    memcpy(dst->argument_types, src->argument_types,
+           src->argument_count * sizeof(*dst->argument_types));
   }
   return 1;
 }
@@ -249,7 +259,30 @@ static int irv_snapshot_matches(const IRFunction *function,
   for (size_t i = 0; i < function->instruction_count; i++) {
     const IRInstruction *a = &function->instructions[i];
     const IRInstruction *b = &snapshot->instructions[i];
-    if (a->op != b->op || a->is_float != b->is_float ||
+    if (a->op != b->op || a->intrinsic != b->intrinsic ||
+        a->address_space != b->address_space ||
+        a->memory_order != b->memory_order ||
+        a->failure_memory_order != b->failure_memory_order ||
+        a->memory_scope != b->memory_scope ||
+        a->memory_regions != b->memory_regions ||
+        a->async_copy_element_count != b->async_copy_element_count ||
+        a->async_copy_transaction_bytes != b->async_copy_transaction_bytes ||
+        a->async_copy_pending_groups != b->async_copy_pending_groups ||
+        a->async_copy_cache != b->async_copy_cache ||
+        a->async_copy_generated != b->async_copy_generated ||
+        memcmp(&a->tensor_transfer, &b->tensor_transfer,
+               sizeof(a->tensor_transfer)) != 0 ||
+        a->tensor_transfer_has_prepared_view !=
+            b->tensor_transfer_has_prepared_view ||
+        memcmp(&a->tensor_mma, &b->tensor_mma,
+               sizeof(a->tensor_mma)) != 0 ||
+        memcmp(&a->tensor_epilogue, &b->tensor_epilogue,
+               sizeof(a->tensor_epilogue)) != 0 ||
+        a->tensor_mma_count != b->tensor_mma_count ||
+        a->tensor_residency_id != b->tensor_residency_id ||
+        a->tensor_residency_role != b->tensor_residency_role ||
+        a->tensor_residency_scope != b->tensor_residency_scope ||
+        a->is_float != b->is_float ||
         a->float_bits != b->float_bits || a->is_unsigned != b->is_unsigned ||
         a->argument_count != b->argument_count) {
       return 0;

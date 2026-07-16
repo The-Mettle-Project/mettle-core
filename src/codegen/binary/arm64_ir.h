@@ -23,6 +23,13 @@ int arm64_ir_encode_function(Arm64Emit *e, const IRFunction *fn);
 int arm64_ir_encode_program(Arm64Emit *e, const IRProgram *prog,
                             const char *entry);
 
+/* Emit an AArch64 ELF64 relocatable object suitable for the native system
+ * linker. Unlike arm64_ir_encode_program, this has no synthetic _start: it
+ * preserves normal function/global linkage, external calls, and .rodata/.data
+ * relocations. `error` may be NULL. */
+int arm64_ir_write_object(const IRProgram *prog, const char *path, char *error,
+                          size_t error_capacity);
+
 /* Write `code` as a minimal static AArch64 ELF executable (entry at the code
  * start, where _start lives). Returns 0 on I/O failure. */
 int arm64_write_elf(const char *path, const unsigned char *code, size_t len);

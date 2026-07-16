@@ -181,6 +181,22 @@ Type *type_checker_default_integer_literal_type(TypeChecker *checker,
 Type *type_checker_infer_type_internal(TypeChecker *checker,
                                               ASTNode *expression);
 
+/* Shared target-neutral tensor builtin helpers. The epilogue checker lives in
+ * its own translation unit to keep complete CodeView debug information in
+ * normal MinGW builds. */
+const char *type_checker_tensor_option_identifier(ASTNode *node);
+int type_checker_tensor_option_u32(TypeChecker *checker, ASTNode *node,
+                                   const char *name, uint32_t maximum,
+                                   uint32_t *out_value);
+MtlcTensorElement type_checker_tensor_element_name(const char *name);
+MtlcTensorLayout type_checker_tensor_layout_name(const char *name);
+int type_checker_tensor_pointer_matches(Type *type,
+                                        MtlcTensorElement element);
+Type *type_checker_tensor_epilogue_builtin(TypeChecker *checker,
+                                           ASTNode *expression,
+                                           CallExpression *call,
+                                           int *handled);
+
 Type *type_checker_parse_function_pointer_type(TypeChecker *checker,
                                                       const char *name);
 

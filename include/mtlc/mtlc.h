@@ -16,6 +16,9 @@
 #define MTLC_H
 
 #include "context.h"
+#include "intrinsic.h"
+#include "memory.h"
+#include "tensor.h"
 #include "module.h"
 #include "pipeline.h"
 #include "target.h"

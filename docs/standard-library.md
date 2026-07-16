@@ -223,9 +223,9 @@ on the GPU. Thin bindings over `nvcuda` (the OS driver, no `cudart`, no `nvcc`).
 Link the driver import stub at build time (`--link-arg <CUDA>/lib/x64/cuda.lib`
 on Windows; `-lcuda` on Linux).
 
-Raw bindings: `cuInit`, `cuDeviceGet`, `cuCtxCreate_v2`, `cuModuleLoadData`,
-`cuModuleGetFunction`, `cuMemAlloc_v2`, `cuMemFree_v2`, `cuMemcpyHtoD_v2`,
-`cuMemcpyDtoH_v2`, `cuLaunchKernel`, `cuCtxSynchronize`.
+Raw bindings cover context/device queries, module loading, device/managed and
+stream-ordered allocation, blocking/asynchronous copies, streams, events,
+kernel launch, and synchronization.
 
 Helpers (return handles directly; `0` on failure):
 
@@ -234,11 +234,21 @@ Helpers (return handles directly; `0` on failure):
   null-terminated PTX image in host memory.
 - `gpu_func(mod: int64, name: cstring) -> int64`: resolve a kernel by name.
 - `gpu_malloc(bytes: int64) -> int64`, `gpu_free(dptr: int64)`.
+- `gpu_managed_malloc` / `gpu_managed_free`: one unified-address pointer for
+  the host and GPU (important on GB10 UMA).
+- `gpu_malloc_async` / `gpu_free_async`: stream-ordered allocation.
 - `gpu_to_device(dst: int64, src: uint8*, bytes: int64)`,
   `gpu_to_host(dst: uint8*, src: int64, bytes: int64)`.
+- `gpu_stream_create`, `gpu_stream_sync`, `gpu_stream_destroy`, asynchronous
+  copy helpers, and event create/record/wait/timing helpers.
 - `gpu_sync()`: wraps `cuCtxSynchronize`.
-- `gpu_launch(f, grid, block, params, nargs)`: the primitive the
-  [`dispatch`](gpu.md) statement lowers to (1-D `cuLaunchKernel` + synchronize).
+- `mtlc_gpu_launch_checked`: stable checked provider ABI used by semantic
+  [`dispatch`](gpu.md); the CUDA provider maps its 3-D launch descriptor to
+  `cuLaunchKernel` and terminates on enqueue failure.
+- `gpu_launch(f, grid, block, params, nargs)`: low-level asynchronous 1-D
+  helper returning CUDA's status for manual error handling.
+- `gpu_launch_on` and `gpu_launch_3d`: explicit stream, 3-D geometry, and
+  dynamic shared-memory launch configuration.
 
 See [GPU Offload](gpu.md) for kernel syntax (`kernel`, `thread.x`, `dispatch`)
 and a complete example.

@@ -27,6 +27,7 @@ typedef struct {
   size_t param_count;
   int is_extern;
   int has_body;
+  int is_kernel;
 } FnDecl;
 
 struct MtlcFn {
@@ -181,13 +182,38 @@ void mtlc_builder_global(MtlcBuilder *builder, const char *name,
   record_type(builder, type);
 }
 
-MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
-                             const MtlcType *return_type,
-                             const char *const *param_names,
-                             const MtlcType *const *param_types,
-                             size_t param_count, int is_extern) {
+static int kernel_scalar_type(const MtlcType *type) {
+  return type &&
+         (mtlc_type_is_integer(type) || mtlc_type_is_float(type) ||
+          type->kind == MTLC_TYPE_BOOL);
+}
+
+static int kernel_parameter_type(const MtlcType *type) {
+  return kernel_scalar_type(type) ||
+         (type && type->kind == MTLC_TYPE_POINTER && type->base_type &&
+          kernel_scalar_type(type->base_type));
+}
+
+static MtlcFn *builder_function_impl(MtlcBuilder *builder, const char *name,
+                                    const MtlcType *return_type,
+                                    const char *const *param_names,
+                                    const MtlcType *const *param_types,
+                                    size_t param_count, int is_extern,
+                                    int is_kernel) {
   if (!builder || builder->error || !name || !return_type) {
     return NULL;
+  }
+  if (is_kernel) {
+    if (is_extern || return_type->kind != MTLC_TYPE_VOID) {
+      builder->error = 1;
+      return NULL;
+    }
+    for (size_t i = 0; i < param_count; i++) {
+      if (!param_types || !kernel_parameter_type(param_types[i])) {
+        builder->error = 1;
+        return NULL;
+      }
+    }
   }
 
   /* record the declaration (used at finish for the module symbol table) */
@@ -208,6 +234,7 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
   decl->param_count = param_count;
   decl->is_extern = is_extern ? 1 : 0;
   decl->has_body = is_extern ? 0 : 1;
+  decl->is_kernel = is_kernel ? 1 : 0;
   if (param_count > 0) {
     decl->param_names = calloc(param_count, sizeof(char *));
     decl->param_types = calloc(param_count, sizeof(MtlcType *));
@@ -243,6 +270,7 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
     free(type_names);
   }
   irf->return_type_name = mettle_strdup(type_name(return_type));
+  irf->is_kernel = is_kernel ? 1 : 0;
   record_type(builder, return_type);
   if (!ir_program_add_function(builder->program, irf)) {
     ir_function_destroy(irf);
@@ -274,6 +302,24 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
   }
   builder->fns[builder->fn_count++] = fn;
   return fn;
+}
+
+MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
+                              const MtlcType *return_type,
+                              const char *const *param_names,
+                              const MtlcType *const *param_types,
+                              size_t param_count, int is_extern) {
+  return builder_function_impl(builder, name, return_type, param_names,
+                               param_types, param_count, is_extern, 0);
+}
+
+MtlcFn *mtlc_builder_kernel(MtlcBuilder *builder, const char *name,
+                            const char *const *param_names,
+                            const MtlcType *const *param_types,
+                            size_t param_count) {
+  return builder_function_impl(
+      builder, name, mtlc_type_scalar(MTLC_TYPE_VOID), param_names, param_types,
+      param_count, 0, 1);
 }
 
 /* ------------------------------------------------------------------- values */
@@ -503,6 +549,13 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
   MtlcValue res = is_void ? MTLC_NO_VALUE : fresh_temp(fn);
   IRInstruction inst = {0};
   inst.op = IR_OP_CALL;
+  inst.intrinsic = ir_intrinsic_from_name(callee);
+  if (ir_intrinsic_is_atomic(inst.intrinsic)) {
+    inst.address_space = MTLC_ADDRESS_SPACE_GLOBAL;
+    inst.memory_order = MTLC_MEMORY_ORDER_RELAXED;
+    inst.failure_memory_order = MTLC_MEMORY_ORDER_RELAXED;
+    inst.memory_scope = MTLC_MEMORY_SCOPE_DEVICE;
+  }
   if (!is_void) {
     const IROperand *dest = value_operand(fn, res);
     if (dest) {
@@ -516,6 +569,714 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
   emit(fn, &inst);
   free(argv); /* elements were cloned by append; free the container only */
   return res;
+}
+
+MtlcValue mtlc_address_space_alloc(MtlcFn *fn, const char *name,
+                                   const MtlcType *element_type, size_t count,
+                                   MtlcAddressSpace address_space) {
+  if (!fn || !name || !element_type || count == 0 || count > UINT32_MAX ||
+      !fn->ir->is_kernel ||
+      (address_space != MTLC_ADDRESS_SPACE_WORKGROUP &&
+       address_space != MTLC_ADDRESS_SPACE_PRIVATE)) {
+    if (fn) fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  const MtlcType *pointer_type =
+      mtlc_type_pointer_in(element_type, address_space);
+  if (!pointer_type || mtlc_type_size(element_type) == 0 ||
+      count > SIZE_MAX / mtlc_type_size(element_type)) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  record_type(fn->builder, element_type);
+  record_type(fn->builder, pointer_type);
+  MtlcValue result = push_value(fn, ir_operand_symbol(name));
+  const IROperand *dest = value_operand(fn, result);
+  if (!dest) return MTLC_NO_VALUE;
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_ADDRESS_SPACE_ALLOC;
+  instruction.dest = *dest;
+  instruction.rhs = ir_operand_int((long long)count);
+  instruction.text = (char *)type_name(element_type);
+  instruction.value_type = (MtlcType *)pointer_type;
+  instruction.address_space = address_space;
+  emit(fn, &instruction);
+  return result;
+}
+
+MtlcValue mtlc_dynamic_workgroup_view(MtlcFn *fn, const char *name,
+                                      const MtlcType *element_type) {
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !name || !element_type ||
+      mtlc_type_size(element_type) == 0) {
+    if (fn) fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  const MtlcType *pointer_type =
+      mtlc_type_pointer_in(element_type, MTLC_ADDRESS_SPACE_WORKGROUP);
+  if (!pointer_type) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  record_type(fn->builder, element_type);
+  record_type(fn->builder, pointer_type);
+  MtlcValue result = push_value(fn, ir_operand_symbol(name));
+  const IROperand *dest = value_operand(fn, result);
+  if (!dest) return MTLC_NO_VALUE;
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_ADDRESS_SPACE_ALLOC;
+  instruction.dest = *dest;
+  instruction.rhs = ir_operand_int(0);
+  instruction.text = (char *)type_name(element_type);
+  instruction.value_type = (MtlcType *)pointer_type;
+  instruction.address_space = MTLC_ADDRESS_SPACE_WORKGROUP;
+  emit(fn, &instruction);
+  return result;
+}
+
+MtlcValue mtlc_intrinsic(MtlcFn *fn, MtlcIntrinsic intrinsic,
+                         const MtlcValue *args, size_t arg_count,
+                         const MtlcType *return_type) {
+  const char *name = ir_intrinsic_name(intrinsic);
+  int arity = ir_intrinsic_arity(intrinsic);
+  if (!fn || !name || arity < 0 || (size_t)arity != arg_count ||
+      !return_type ||
+      (ir_intrinsic_is_atomic(intrinsic) &&
+       return_type->kind != ir_intrinsic_atomic_result_kind(intrinsic)) ||
+      (ir_intrinsic_is_subgroup(intrinsic) &&
+       return_type->kind != ir_intrinsic_subgroup_result_kind(intrinsic))) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  return mtlc_call(fn, name, args, arg_count, return_type);
+}
+
+MtlcValue mtlc_intrinsic_memory(MtlcFn *fn, MtlcIntrinsic intrinsic,
+                                const MtlcValue *args, size_t arg_count,
+                                const MtlcType *return_type,
+                                MtlcAddressSpace address_space,
+                                MtlcMemoryOrder order,
+                                MtlcMemoryScope scope) {
+  MtlcValue result;
+  IRInstruction *instruction;
+  if (!fn || !fn->ir || !fn->ir->is_kernel ||
+      !ir_intrinsic_is_atomic(intrinsic) ||
+      ir_intrinsic_is_compare_exchange(intrinsic) ||
+      (address_space != MTLC_ADDRESS_SPACE_GENERIC &&
+       address_space != MTLC_ADDRESS_SPACE_GLOBAL &&
+       address_space != MTLC_ADDRESS_SPACE_WORKGROUP) ||
+      order < MTLC_MEMORY_ORDER_RELAXED ||
+      order > MTLC_MEMORY_ORDER_SEQ_CST ||
+      (ir_intrinsic_is_atomic_load(intrinsic) &&
+       order != MTLC_MEMORY_ORDER_RELAXED &&
+       order != MTLC_MEMORY_ORDER_ACQUIRE &&
+       order != MTLC_MEMORY_ORDER_SEQ_CST) ||
+      (ir_intrinsic_is_atomic_store(intrinsic) &&
+       order != MTLC_MEMORY_ORDER_RELAXED &&
+       order != MTLC_MEMORY_ORDER_RELEASE &&
+       order != MTLC_MEMORY_ORDER_SEQ_CST) ||
+      scope < MTLC_MEMORY_SCOPE_WORK_ITEM ||
+      scope > MTLC_MEMORY_SCOPE_SYSTEM ||
+      (address_space == MTLC_ADDRESS_SPACE_WORKGROUP &&
+       scope > MTLC_MEMORY_SCOPE_WORKGROUP)) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return MTLC_NO_VALUE;
+  }
+  result = mtlc_intrinsic(fn, intrinsic, args, arg_count, return_type);
+  if (fn->builder->error || fn->ir->instruction_count == 0) {
+    return MTLC_NO_VALUE;
+  }
+  instruction = &fn->ir->instructions[fn->ir->instruction_count - 1];
+  if (instruction->op != IR_OP_CALL || instruction->intrinsic != intrinsic) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  instruction->address_space = address_space;
+  instruction->memory_order = order;
+  instruction->failure_memory_order = MTLC_MEMORY_ORDER_RELAXED;
+  instruction->memory_scope = scope;
+  return result;
+}
+
+static int mtlc_compare_exchange_failure_valid(MtlcMemoryOrder success,
+                                               MtlcMemoryOrder failure) {
+  if (failure != MTLC_MEMORY_ORDER_RELAXED &&
+      failure != MTLC_MEMORY_ORDER_ACQUIRE &&
+      failure != MTLC_MEMORY_ORDER_SEQ_CST)
+    return 0;
+  switch (success) {
+  case MTLC_MEMORY_ORDER_RELAXED:
+    return failure == MTLC_MEMORY_ORDER_RELAXED;
+  case MTLC_MEMORY_ORDER_ACQUIRE:
+  case MTLC_MEMORY_ORDER_ACQ_REL:
+    return failure == MTLC_MEMORY_ORDER_RELAXED ||
+           failure == MTLC_MEMORY_ORDER_ACQUIRE;
+  case MTLC_MEMORY_ORDER_RELEASE:
+    return failure == MTLC_MEMORY_ORDER_RELAXED;
+  case MTLC_MEMORY_ORDER_SEQ_CST:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+MtlcValue mtlc_atomic_compare_exchange(
+    MtlcFn *fn, MtlcIntrinsic intrinsic, const MtlcValue args[4],
+    const MtlcType *return_type, MtlcAddressSpace address_space,
+    MtlcMemoryOrder success_order, MtlcMemoryOrder failure_order,
+    MtlcMemoryScope scope) {
+  MtlcValue result;
+  IRInstruction *instruction;
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !args || !return_type ||
+      !ir_intrinsic_is_compare_exchange(intrinsic) ||
+      return_type->kind != ir_intrinsic_atomic_result_kind(intrinsic) ||
+      (address_space != MTLC_ADDRESS_SPACE_GENERIC &&
+       address_space != MTLC_ADDRESS_SPACE_GLOBAL &&
+       address_space != MTLC_ADDRESS_SPACE_WORKGROUP) ||
+      success_order < MTLC_MEMORY_ORDER_RELAXED ||
+      success_order > MTLC_MEMORY_ORDER_SEQ_CST ||
+      !mtlc_compare_exchange_failure_valid(success_order, failure_order) ||
+      scope < MTLC_MEMORY_SCOPE_WORK_ITEM ||
+      scope > MTLC_MEMORY_SCOPE_SYSTEM ||
+      (address_space == MTLC_ADDRESS_SPACE_WORKGROUP &&
+       scope > MTLC_MEMORY_SCOPE_WORKGROUP)) {
+    if (fn) fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  result = mtlc_intrinsic(fn, intrinsic, args, 4, return_type);
+  if (fn->builder->error || fn->ir->instruction_count == 0)
+    return MTLC_NO_VALUE;
+  instruction = &fn->ir->instructions[fn->ir->instruction_count - 1];
+  if (instruction->op != IR_OP_CALL || instruction->intrinsic != intrinsic) {
+    fn->builder->error = 1;
+    return MTLC_NO_VALUE;
+  }
+  instruction->address_space = address_space;
+  instruction->memory_order = success_order;
+  instruction->failure_memory_order = failure_order;
+  instruction->memory_scope = scope;
+  return result;
+}
+
+void mtlc_workgroup_barrier(MtlcFn *fn, MtlcMemoryOrder order,
+                            unsigned memory_regions) {
+  const unsigned supported = MTLC_MEMORY_REGION_WORKGROUP |
+                             MTLC_MEMORY_REGION_GLOBAL;
+  if (!fn || !fn->ir || !fn->ir->is_kernel ||
+      order < MTLC_MEMORY_ORDER_ACQUIRE ||
+      order > MTLC_MEMORY_ORDER_SEQ_CST || memory_regions == 0 ||
+      (memory_regions & ~supported) != 0) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_BARRIER;
+  instruction.memory_order = order;
+  instruction.memory_scope = MTLC_MEMORY_SCOPE_WORKGROUP;
+  instruction.memory_regions = memory_regions;
+  emit(fn, &instruction);
+}
+
+void mtlc_async_copy_workgroup(MtlcFn *fn, MtlcValue destination,
+                               MtlcValue source,
+                               const MtlcType *element_type,
+                               uint32_t element_count,
+                               uint32_t transaction_bytes,
+                               MtlcAsyncCache cache) {
+  size_t element_size = element_type ? mtlc_type_size(element_type) : 0;
+  int scalar_element =
+      element_type &&
+      (element_type->kind == MTLC_TYPE_INT8 ||
+       element_type->kind == MTLC_TYPE_INT16 ||
+       element_type->kind == MTLC_TYPE_INT32 ||
+       element_type->kind == MTLC_TYPE_INT64 ||
+       element_type->kind == MTLC_TYPE_UINT8 ||
+       element_type->kind == MTLC_TYPE_UINT16 ||
+       element_type->kind == MTLC_TYPE_UINT32 ||
+       element_type->kind == MTLC_TYPE_UINT64 ||
+       element_type->kind == MTLC_TYPE_BOOL ||
+       element_type->kind == MTLC_TYPE_FLOAT32 ||
+       element_type->kind == MTLC_TYPE_FLOAT64);
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !element_type ||
+      !scalar_element || element_count == 0 || element_count > 4096 ||
+      element_size == 0 ||
+      element_size > 8 || (size_t)element_count > 65536u / element_size ||
+      ((size_t)element_count * element_size) % 4u != 0 ||
+      (transaction_bytes != 4 && transaction_bytes != 8 &&
+       transaction_bytes != 16) ||
+      ((size_t)element_count * element_size) % transaction_bytes != 0 ||
+      (cache != MTLC_ASYNC_CACHE_ALL &&
+       cache != MTLC_ASYNC_CACHE_GLOBAL) ||
+      (cache == MTLC_ASYNC_CACHE_GLOBAL &&
+       transaction_bytes != 16)) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  const IROperand *destination_operand = value_operand(fn, destination);
+  const IROperand *source_operand = value_operand(fn, source);
+  const MtlcType *destination_type =
+      mtlc_type_pointer_in(element_type, MTLC_ADDRESS_SPACE_WORKGROUP);
+  const MtlcType *source_type =
+      mtlc_type_pointer_in(element_type, MTLC_ADDRESS_SPACE_GLOBAL);
+  if (!destination_operand || !source_operand || !destination_type ||
+      !source_type) {
+    fn->builder->error = 1;
+    return;
+  }
+  record_type(fn->builder, element_type);
+  record_type(fn->builder, destination_type);
+  record_type(fn->builder, source_type);
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_ASYNC_COPY;
+  instruction.async_copy_element_count = element_count;
+  instruction.async_copy_transaction_bytes = transaction_bytes;
+  instruction.async_copy_cache = cache;
+  IROperand arguments[2] = {*destination_operand, *source_operand};
+  MtlcType *argument_types[2] = {(MtlcType *)destination_type,
+                                 (MtlcType *)source_type};
+  instruction.arguments = arguments;
+  instruction.argument_types = argument_types;
+  instruction.argument_count = 2;
+  emit(fn, &instruction);
+}
+
+void mtlc_async_copy_commit(MtlcFn *fn) {
+  if (!fn || !fn->ir || !fn->ir->is_kernel) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_ASYNC_COMMIT;
+  emit(fn, &instruction);
+}
+
+void mtlc_async_copy_wait(MtlcFn *fn, uint32_t pending_groups) {
+  if (!fn || !fn->ir || !fn->ir->is_kernel || pending_groups > 7) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_ASYNC_WAIT;
+  instruction.async_copy_pending_groups = pending_groups;
+  emit(fn, &instruction);
+}
+
+void mtlc_tensor_transfer_workgroup(
+    MtlcFn *fn, const MtlcTensorTransferDesc *desc,
+    const MtlcTensorTransferOperands *operands) {
+  int has_view = operands && operands->prepared_view != MTLC_NO_VALUE;
+  size_t count = ir_tensor_transfer_operand_count(desc, has_view);
+  MtlcTypeKind storage_kind =
+      desc ? ir_tensor_element_storage_kind(desc->element) : MTLC_TYPE_VOID;
+  const MtlcType *element_type = mtlc_type_scalar(storage_kind);
+  const MtlcType *global_type =
+      mtlc_type_pointer_in(element_type, MTLC_ADDRESS_SPACE_GLOBAL);
+  const MtlcType *workgroup_type =
+      mtlc_type_pointer_in(element_type, MTLC_ADDRESS_SPACE_WORKGROUP);
+  const MtlcType *view_type = mtlc_type_pointer_in(
+      mtlc_type_scalar(MTLC_TYPE_UINT8), MTLC_ADDRESS_SPACE_GLOBAL);
+  const MtlcType *coordinate_type = mtlc_type_scalar(MTLC_TYPE_INT32);
+  IROperand *arguments = NULL;
+  MtlcType **argument_types = NULL;
+  MtlcValue handles[3 + MTLC_TENSOR_MAX_RANK];
+  size_t at = 0;
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !operands || !count ||
+      storage_kind == MTLC_TYPE_VOID || !element_type || !global_type ||
+      !workgroup_type || !view_type || !coordinate_type) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  arguments = calloc(count, sizeof(*arguments));
+  argument_types = calloc(count, sizeof(*argument_types));
+  if (!arguments || !argument_types) {
+    free(arguments);
+    free(argument_types);
+    fn->builder->error = 1;
+    return;
+  }
+  handles[at++] = operands->destination;
+  handles[at++] = operands->source;
+  if (has_view) handles[at++] = operands->prepared_view;
+  for (uint8_t dimension = 0; dimension < desc->rank; dimension++)
+    handles[at++] = operands->coordinates[dimension];
+  if (at != count) {
+    free(arguments);
+    free(argument_types);
+    fn->builder->error = 1;
+    return;
+  }
+  for (size_t i = 0; i < count; i++) {
+    const IROperand *operand = value_operand(fn, handles[i]);
+    if (!operand) {
+      free(arguments);
+      free(argument_types);
+      fn->builder->error = 1;
+      return;
+    }
+    arguments[i] = *operand;
+  }
+  if (desc->direction == MTLC_TENSOR_TRANSFER_GLOBAL_TO_WORKGROUP) {
+    argument_types[0] = (MtlcType *)workgroup_type;
+    argument_types[1] = (MtlcType *)global_type;
+  } else {
+    argument_types[0] = (MtlcType *)global_type;
+    argument_types[1] = (MtlcType *)workgroup_type;
+  }
+  at = 2;
+  if (has_view) argument_types[at++] = (MtlcType *)view_type;
+  for (; at < count; at++)
+    argument_types[at] = (MtlcType *)coordinate_type;
+
+  record_type(fn->builder, element_type);
+  record_type(fn->builder, global_type);
+  record_type(fn->builder, workgroup_type);
+  record_type(fn->builder, view_type);
+  record_type(fn->builder, coordinate_type);
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_TENSOR_TRANSFER;
+  instruction.tensor_transfer = *desc;
+  instruction.tensor_transfer_has_prepared_view = has_view;
+  instruction.arguments = arguments;
+  instruction.argument_types = argument_types;
+  instruction.argument_count = count;
+  emit(fn, &instruction);
+  free(arguments);
+  free(argument_types);
+}
+
+static int mtlc_tensor_mma_handles(const MtlcTensorMmaDesc *desc,
+                                   const MtlcTensorMmaOperands *operands,
+                                   MtlcValue handles[11], size_t *out_count) {
+  size_t count = 0;
+  size_t expected = ir_tensor_mma_operand_count(desc);
+  int needs_metadata = desc &&
+                       desc->sparsity != MTLC_TENSOR_SPARSITY_DENSE;
+  int needs_a_scale = desc && desc->a_scale_mode != MTLC_TENSOR_SCALE_NONE;
+  int needs_b_scale = desc && desc->b_scale_mode != MTLC_TENSOR_SCALE_NONE;
+  unsigned runtime_strides = ir_tensor_mma_runtime_stride_mask(desc);
+  if (!operands || !out_count || expected < 4 ||
+      (needs_metadata != (operands && operands->metadata != MTLC_NO_VALUE)) ||
+      (needs_a_scale != (operands && operands->a_scale != MTLC_NO_VALUE)) ||
+      (needs_b_scale != (operands && operands->b_scale != MTLC_NO_VALUE)) ||
+      operands->runtime_stride_mask != runtime_strides) {
+    return 0;
+  }
+  handles[count++] = operands->a;
+  handles[count++] = operands->b;
+  handles[count++] = operands->c;
+  handles[count++] = operands->d;
+  if (needs_metadata) handles[count++] = operands->metadata;
+  if (needs_a_scale) handles[count++] = operands->a_scale;
+  if (needs_b_scale) handles[count++] = operands->b_scale;
+  if (runtime_strides & MTLC_TENSOR_RUNTIME_STRIDE_A)
+    handles[count++] = operands->a_leading_dimension;
+  if (runtime_strides & MTLC_TENSOR_RUNTIME_STRIDE_B)
+    handles[count++] = operands->b_leading_dimension;
+  if (runtime_strides & MTLC_TENSOR_RUNTIME_STRIDE_C)
+    handles[count++] = operands->c_leading_dimension;
+  if (runtime_strides & MTLC_TENSOR_RUNTIME_STRIDE_D)
+    handles[count++] = operands->d_leading_dimension;
+  if (count != expected) {
+    return 0;
+  }
+  *out_count = count;
+  return 1;
+}
+
+static int mtlc_values_same(MtlcFn *fn, MtlcValue lhs, MtlcValue rhs) {
+  const IROperand *lhs_operand = value_operand(fn, lhs);
+  const IROperand *rhs_operand = value_operand(fn, rhs);
+  return lhs_operand && rhs_operand &&
+         ir_operand_same(lhs_operand, rhs_operand);
+}
+
+void mtlc_tensor_mma_chain(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                           const MtlcTensorMmaOperands *tiles,
+                           size_t tile_count) {
+  size_t per_tile = ir_tensor_mma_operand_count(desc);
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !tiles || tile_count == 0 ||
+      tile_count > UINT32_MAX || per_tile < 4 ||
+      tile_count > SIZE_MAX / per_tile ||
+      (tile_count > 1 &&
+       (!desc || desc->accumulator_element != desc->result_element ||
+        desc->c_layout != desc->d_layout ||
+        ((desc->c_leading_dimension == 0) !=
+         (desc->d_leading_dimension == 0)) ||
+        (desc->c_leading_dimension != 0 &&
+         desc->c_leading_dimension != desc->d_leading_dimension)))) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  if (tile_count > 1) {
+    MtlcValue output = tiles[0].d;
+    MtlcValue output_stride = tiles[0].d_leading_dimension;
+    for (size_t tile = 0; tile < tile_count; tile++) {
+      if (!mtlc_values_same(fn, tiles[tile].d, output) ||
+          (tile > 0 && !mtlc_values_same(fn, tiles[tile].c, output)) ||
+          (desc->c_leading_dimension == 0 &&
+           (!mtlc_values_same(fn, tiles[tile].d_leading_dimension,
+                              output_stride) ||
+            (tile > 0 &&
+             !mtlc_values_same(fn, tiles[tile].c_leading_dimension,
+                               output_stride))))) {
+        fn->builder->error = 1;
+        return;
+      }
+    }
+  }
+  size_t total = per_tile * tile_count;
+  IROperand *arguments = calloc(total, sizeof(*arguments));
+  if (!arguments) {
+    fn->builder->error = 1;
+    return;
+  }
+  for (size_t tile = 0; tile < tile_count; tile++) {
+    MtlcValue handles[11];
+    size_t count = 0;
+    if (!mtlc_tensor_mma_handles(desc, &tiles[tile], handles, &count) ||
+        count != per_tile) {
+      free(arguments);
+      fn->builder->error = 1;
+      return;
+    }
+    for (size_t i = 0; i < count; i++) {
+      const IROperand *operand = value_operand(fn, handles[i]);
+      if (!operand) {
+        free(arguments);
+        fn->builder->error = 1;
+        return;
+      }
+      arguments[tile * per_tile + i] = *operand;
+    }
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_TENSOR_MMA;
+  instruction.arguments = arguments;
+  instruction.argument_count = total;
+  instruction.tensor_mma = *desc;
+  instruction.tensor_mma_count = (uint32_t)tile_count;
+  emit(fn, &instruction);
+  free(arguments);
+}
+
+void mtlc_tensor_mma_ex(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                        const MtlcTensorMmaOperands *operands) {
+  mtlc_tensor_mma_chain(fn, desc, operands, 1);
+}
+
+void mtlc_tensor_mma(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                     MtlcValue a, MtlcValue b, MtlcValue c, MtlcValue d) {
+  MtlcTensorMmaOperands operands = {0};
+  operands.a = a;
+  operands.b = b;
+  operands.c = c;
+  operands.d = d;
+  operands.metadata = MTLC_NO_VALUE;
+  operands.a_scale = MTLC_NO_VALUE;
+  operands.b_scale = MTLC_NO_VALUE;
+  mtlc_tensor_mma_ex(fn, desc, &operands);
+}
+
+void mtlc_tensor_mma_strided(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                             MtlcValue a, MtlcValue b,
+                             MtlcValue c, MtlcValue d,
+                             MtlcValue lda, MtlcValue ldb,
+                             MtlcValue ldc, MtlcValue ldd) {
+  MtlcTensorMmaOperands operands = {0};
+  operands.a = a;
+  operands.b = b;
+  operands.c = c;
+  operands.d = d;
+  operands.metadata = MTLC_NO_VALUE;
+  operands.a_scale = MTLC_NO_VALUE;
+  operands.b_scale = MTLC_NO_VALUE;
+  operands.runtime_stride_mask = MTLC_TENSOR_RUNTIME_STRIDE_ALL;
+  operands.a_leading_dimension = lda;
+  operands.b_leading_dimension = ldb;
+  operands.c_leading_dimension = ldc;
+  operands.d_leading_dimension = ldd;
+  mtlc_tensor_mma_ex(fn, desc, &operands);
+}
+
+void mtlc_tensor_matmul(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                        const MtlcTensorMatmulOperands *operands) {
+  size_t mma_count = ir_tensor_mma_operand_count(desc);
+  size_t total = ir_tensor_matmul_operand_count(desc);
+  MtlcValue handles[16];
+  size_t handle_count = 0;
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !operands ||
+      !mma_count || total != mma_count + 5u ||
+      !mtlc_tensor_mma_handles(desc, &operands->matrix, handles,
+                               &handle_count) ||
+      handle_count != mma_count) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+  handles[handle_count++] = operands->row_origin;
+  handles[handle_count++] = operands->column_origin;
+  handles[handle_count++] = operands->problem_m;
+  handles[handle_count++] = operands->problem_n;
+  handles[handle_count++] = operands->problem_k;
+  if (handle_count != total) {
+    fn->builder->error = 1;
+    return;
+  }
+  IROperand *arguments = calloc(total, sizeof(*arguments));
+  if (!arguments) {
+    fn->builder->error = 1;
+    return;
+  }
+  for (size_t i = 0; i < total; i++) {
+    const IROperand *operand = value_operand(fn, handles[i]);
+    if (!operand) {
+      free(arguments);
+      fn->builder->error = 1;
+      return;
+    }
+    arguments[i] = *operand;
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_TENSOR_MATMUL;
+  instruction.arguments = arguments;
+  instruction.argument_count = total;
+  instruction.tensor_mma = *desc;
+  instruction.tensor_mma_count = 1;
+  emit(fn, &instruction);
+  free(arguments);
+}
+
+void mtlc_tensor_epilogue(
+    MtlcFn *fn, const MtlcTensorEpilogueDesc *desc,
+    const MtlcTensorEpilogueOperands *operands) {
+  MtlcValue handles[8];
+  size_t count = 0;
+  size_t expected = ir_tensor_epilogue_operand_count(desc);
+  int needs_bias =
+      desc && desc->bias_mode != MTLC_TENSOR_BIAS_NONE;
+  int needs_alpha = desc && desc->scale_output;
+  int needs_beta = desc && desc->scale_bias;
+  int needs_clamp =
+      desc && desc->activation == MTLC_TENSOR_ACTIVATION_CLAMP;
+  int needs_stride = desc && desc->leading_dimension == 0;
+  int needs_bias_stride =
+      desc && desc->bias_mode == MTLC_TENSOR_BIAS_MATRIX &&
+      desc->bias_leading_dimension == 0;
+  if (!fn || !fn->ir || !fn->ir->is_kernel || !operands || !expected ||
+      (needs_bias != (operands && operands->bias != MTLC_NO_VALUE)) ||
+      (needs_alpha != (operands && operands->alpha != MTLC_NO_VALUE)) ||
+      (needs_beta != (operands && operands->beta != MTLC_NO_VALUE)) ||
+      (needs_clamp !=
+       (operands && operands->clamp_min != MTLC_NO_VALUE &&
+        operands->clamp_max != MTLC_NO_VALUE)) ||
+      (!needs_clamp && operands &&
+       (operands->clamp_min != MTLC_NO_VALUE ||
+        operands->clamp_max != MTLC_NO_VALUE)) ||
+      (needs_stride !=
+       (operands && operands->leading_dimension != MTLC_NO_VALUE)) ||
+      (needs_bias_stride !=
+       (operands && operands->bias_leading_dimension != MTLC_NO_VALUE))) {
+    if (fn) fn->builder->error = 1;
+    return;
+  }
+
+  handles[count++] = operands->destination;
+  if (needs_bias) handles[count++] = operands->bias;
+  if (needs_alpha) handles[count++] = operands->alpha;
+  if (needs_beta) handles[count++] = operands->beta;
+  if (needs_clamp) {
+    handles[count++] = operands->clamp_min;
+    handles[count++] = operands->clamp_max;
+  }
+  if (needs_stride) handles[count++] = operands->leading_dimension;
+  if (needs_bias_stride)
+    handles[count++] = operands->bias_leading_dimension;
+  if (count != expected) {
+    fn->builder->error = 1;
+    return;
+  }
+
+  IROperand arguments[8];
+  for (size_t i = 0; i < count; i++) {
+    const IROperand *operand = value_operand(fn, handles[i]);
+    if (!operand) {
+      fn->builder->error = 1;
+      return;
+    }
+    arguments[i] = *operand;
+  }
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_TENSOR_EPILOGUE;
+  instruction.arguments = arguments;
+  instruction.argument_count = count;
+  instruction.tensor_epilogue = *desc;
+  emit(fn, &instruction);
+}
+
+void mtlc_gpu_launch(MtlcFn *fn, MtlcValue kernel_handle, MtlcDim3 grid,
+                     MtlcDim3 block, MtlcValue dynamic_shared_bytes,
+                     MtlcValue stream, const MtlcValue *args,
+                     const MtlcType *const *arg_types, size_t arg_count) {
+  MtlcValue controls[IR_GPU_LAUNCH_CONTROL_ARGS] = {
+      grid.x,  grid.y,  grid.z, block.x,
+      block.y, block.z, dynamic_shared_bytes, stream};
+  IROperand *operands = NULL;
+  MtlcType **types = NULL;
+  const IROperand *handle;
+  size_t total = IR_GPU_LAUNCH_CONTROL_ARGS + arg_count;
+  if (!fn || fn->ir->is_kernel || (arg_count > 0 && (!args || !arg_types))) {
+    if (fn) {
+      fn->builder->error = 1;
+    }
+    return;
+  }
+  handle = value_operand(fn, kernel_handle);
+  if (!handle) {
+    fn->builder->error = 1;
+    return;
+  }
+  operands = calloc(total, sizeof(*operands));
+  types = calloc(total, sizeof(*types));
+  if (!operands || !types) {
+    free(operands);
+    free(types);
+    fn->builder->error = 1;
+    return;
+  }
+  for (size_t i = 0; i < IR_GPU_LAUNCH_CONTROL_ARGS; i++) {
+    const IROperand *value = value_operand(fn, controls[i]);
+    if (!value) {
+      free(operands);
+      free(types);
+      fn->builder->error = 1;
+      return;
+    }
+    operands[i] = *value;
+  }
+  for (size_t i = 0; i < arg_count; i++) {
+    const IROperand *value = value_operand(fn, args[i]);
+    if (!value || !kernel_parameter_type(arg_types[i])) {
+      free(operands);
+      free(types);
+      fn->builder->error = 1;
+      return;
+    }
+    operands[IR_GPU_LAUNCH_CONTROL_ARGS + i] = *value;
+    types[IR_GPU_LAUNCH_CONTROL_ARGS + i] = (MtlcType *)arg_types[i];
+    record_type(fn->builder, arg_types[i]);
+  }
+
+  IRInstruction instruction = {0};
+  instruction.op = IR_OP_GPU_LAUNCH;
+  instruction.lhs = *handle;
+  instruction.arguments = operands;
+  instruction.argument_types = types;
+  instruction.argument_count = total;
+  emit(fn, &instruction);
+  free(operands);
+  free(types);
 }
 
 /* Real address of a function symbol (defined here or a declared extern):
@@ -853,6 +1614,7 @@ MtlcModule *mtlc_builder_finish(MtlcBuilder *builder) {
     entry.kind = IR_MODSYM_FUNCTION;
     entry.is_extern = d->is_extern;
     entry.has_body = d->has_body;
+    entry.is_kernel = d->is_kernel;
     entry.return_type = (MtlcType *)d->return_type;
     entry.param_count = d->param_count;
     if (d->param_count > 0) {

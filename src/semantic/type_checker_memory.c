@@ -1892,6 +1892,7 @@ static void mem_walk_statement(MemCtx *ctx, ASTNode *statement) {
   }
   case AST_FUNCTION_CALL:
   case AST_FUNC_PTR_CALL:
+  case AST_GPU_LAUNCH:
     mem_walk_expr(ctx, statement);
     return;
   default:

@@ -4,6 +4,14 @@ CC = gcc
 # (bare token, stringified in main.c - avoids fragile quote escaping)
 EXTRA_CFLAGS =
 CFLAGS = -Wall -Wextra -std=c99 -g -O2 -D_GNU_SOURCE -Isrc -Iinclude -fno-omit-frame-pointer $(EXTRA_CFLAGS)
+# Native compiler build profile for DGX Spark. GCC/Clang versions without a
+# GB10-specific scheduler use ARMv9.2-A; GCC 15 / LLVM 21 users should override
+# with `DGX_SPARK_CFLAGS=-mcpu=gb10` as recommended by NVIDIA.
+DGX_SPARK ?= 0
+DGX_SPARK_CFLAGS ?= -march=armv9.2-a
+ifeq ($(DGX_SPARK),1)
+CFLAGS += $(DGX_SPARK_CFLAGS)
+endif
 LDFLAGS =
 ifneq ($(filter Linux linux-gnu,$(shell uname -s 2>/dev/null)),)
 # glibc < 2.34 (e.g. Rocky 8 / glibc 2.28) ships pthread + dl as separate
@@ -26,7 +34,7 @@ LIBMTLC_VERSION = 0.1.0
 # Source files
 LEXER_SOURCES = $(SRCDIR)/lexer/lexer.c
 PARSER_SOURCES = $(SRCDIR)/parser/parser.c $(SRCDIR)/parser/ast.c
-SEMANTIC_SOURCES = $(SRCDIR)/semantic/symbol_table.c $(SRCDIR)/semantic/type_checker.c $(SRCDIR)/semantic/type_checker_types.c $(SRCDIR)/semantic/type_checker_errors.c $(SRCDIR)/semantic/type_checker_safety.c $(SRCDIR)/semantic/type_checker_init_tracker.c $(SRCDIR)/semantic/type_checker_decl.c $(SRCDIR)/semantic/type_checker_match.c $(SRCDIR)/semantic/type_checker_stmt.c $(SRCDIR)/semantic/type_checker_expr.c $(SRCDIR)/semantic/type_checker_memory.c $(SRCDIR)/semantic/register_allocator.c $(SRCDIR)/semantic/import_resolver.c $(SRCDIR)/semantic/monomorphize.c
+SEMANTIC_SOURCES = $(SRCDIR)/semantic/symbol_table.c $(SRCDIR)/semantic/type_checker.c $(SRCDIR)/semantic/type_checker_types.c $(SRCDIR)/semantic/type_checker_errors.c $(SRCDIR)/semantic/type_checker_safety.c $(SRCDIR)/semantic/type_checker_init_tracker.c $(SRCDIR)/semantic/type_checker_decl.c $(SRCDIR)/semantic/type_checker_match.c $(SRCDIR)/semantic/type_checker_stmt.c $(SRCDIR)/semantic/type_checker_expr.c $(SRCDIR)/semantic/type_checker_tensor_epilogue.c $(SRCDIR)/semantic/type_checker_memory.c $(SRCDIR)/semantic/register_allocator.c $(SRCDIR)/semantic/import_resolver.c $(SRCDIR)/semantic/monomorphize.c
 # The AST->IR lowering pass is a FRONTEND concern (it consumes the frontend AST
 # and type system), so it links into the mettle driver, not into libmtlc.
 LOWERING_SOURCES = \

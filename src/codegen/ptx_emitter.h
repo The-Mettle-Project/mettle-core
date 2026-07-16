@@ -5,21 +5,28 @@
 #include "ir/ir.h"
 #include <stdio.h>
 
-/* Lower an IR program to NVIDIA PTX text (one `.visible .entry` per function),
- * targeting the CUDA Driver API's cuModuleLoadData JIT. Every function in the
- * program is treated as a GPU kernel. Type resolution for symbol operands uses
+typedef struct {
+  const char *target; /* PTX target name, for example "sm_121a" */
+  int isa_major;      /* `.version` major component */
+  int isa_minor;      /* `.version` minor component */
+  int tensor_tuple_budget; /* 0 = architecture default; otherwise 1..4096 */
+} PtxEmitOptions;
+
+/* Lower an IR program to NVIDIA PTX text (one `.visible .entry` per kernel),
+ * targeting the CUDA Driver API's cuModuleLoadData JIT. Ordinary functions are
+ * not exported as GPU entry points. Type resolution for symbol operands uses
  * `generator` (its symbol table / type checker); temp/SSA value types are
  * inferred from each defining instruction. PTX has unlimited typed virtual
  * registers, so there is no register allocation -- each IR value maps to a
  * fresh %r/%rd/%f/%fd/%p register of the appropriate class.
  *
- * GPU thread/block indices are exposed to kernel source as nullary intrinsics
- * the emitter recognizes by name: gpu_tid_x/y/z, gpu_ntid_x/y/z (blockDim),
- * gpu_ctaid_x/y/z (blockIdx), gpu_nctaid_x/y/z (gridDim), and gpu_barrier().
+ * GPU operations reach this backend as semantic MtlcIntrinsic identities.
+ * The Mettle frontend maps its legacy gpu_* source aliases at the IR boundary;
+ * other frontends use mtlc_intrinsic() without depending on those spellings.
  *
  * Returns 1 on success. On failure returns 0 and, if error is non-NULL, sets
  * *error to a malloc'd message the caller must free. */
 int ptx_emit_program(IRProgram *program, CodeGenerator *generator, FILE *out,
-                     char **error);
+                     const PtxEmitOptions *options, char **error);
 
 #endif /* PTX_EMITTER_H */

@@ -93,6 +93,7 @@ ASTNode *ast_clone_node(ASTNode *node) {
     dst->is_exported = src->is_exported;
     dst->is_const = src->is_const;
     dst->structural_type = src->structural_type;
+    dst->address_space = src->address_space;
     dst->link_name = ast_copy_string(src->link_name);
     dst->initializer =
         src->initializer ? ast_clone_node(src->initializer) : NULL;
@@ -114,6 +115,7 @@ ASTNode *ast_clone_node(ASTNode *node) {
     dst->parameter_count = src->parameter_count;
     dst->is_exported = src->is_exported;
     dst->is_extern = src->is_extern;
+    dst->is_kernel = src->is_kernel;
     dst->link_name = ast_copy_string(src->link_name);
     dst->type_param_count = src->type_param_count;
     dst->type_params = ast_copy_string_array(src->type_params, src->type_param_count);
@@ -201,6 +203,49 @@ ASTNode *ast_clone_node(ASTNode *node) {
     }
     dst->function_name = ast_intern_string(src->function_name);
     dst->argument_count = src->argument_count;
+    dst->is_gpu_index = src->is_gpu_index;
+    dst->is_gpu_atomic = src->is_gpu_atomic;
+    dst->atomic_address_space = src->atomic_address_space;
+    dst->atomic_memory_order = src->atomic_memory_order;
+    dst->atomic_failure_order = src->atomic_failure_order;
+    dst->atomic_memory_scope = src->atomic_memory_scope;
+    dst->is_gpu_async_copy = src->is_gpu_async_copy;
+    dst->async_copy_element_count = src->async_copy_element_count;
+    dst->async_copy_transaction_bytes = src->async_copy_transaction_bytes;
+    dst->async_copy_pending_groups = src->async_copy_pending_groups;
+    dst->async_copy_cache = src->async_copy_cache;
+    dst->is_tensor_transfer = src->is_tensor_transfer;
+    dst->tensor_transfer_desc = src->tensor_transfer_desc;
+    dst->tensor_transfer_view_argument =
+        src->tensor_transfer_view_argument;
+    memcpy(dst->tensor_transfer_coordinate_arguments,
+           src->tensor_transfer_coordinate_arguments,
+           sizeof(dst->tensor_transfer_coordinate_arguments));
+    dst->is_tensor_mma = src->is_tensor_mma;
+    dst->is_tensor_matmul = src->is_tensor_matmul;
+    dst->tensor_mma_desc = src->tensor_mma_desc;
+    dst->tensor_metadata_argument = src->tensor_metadata_argument;
+    dst->tensor_a_scale_argument = src->tensor_a_scale_argument;
+    dst->tensor_b_scale_argument = src->tensor_b_scale_argument;
+    dst->tensor_a_stride_argument = src->tensor_a_stride_argument;
+    dst->tensor_b_stride_argument = src->tensor_b_stride_argument;
+    dst->tensor_c_stride_argument = src->tensor_c_stride_argument;
+    dst->tensor_d_stride_argument = src->tensor_d_stride_argument;
+    dst->is_tensor_epilogue = src->is_tensor_epilogue;
+    dst->tensor_epilogue_desc = src->tensor_epilogue_desc;
+    dst->tensor_epilogue_bias_argument =
+        src->tensor_epilogue_bias_argument;
+    dst->tensor_epilogue_alpha_argument =
+        src->tensor_epilogue_alpha_argument;
+    dst->tensor_epilogue_beta_argument = src->tensor_epilogue_beta_argument;
+    dst->tensor_epilogue_clamp_min_argument =
+        src->tensor_epilogue_clamp_min_argument;
+    dst->tensor_epilogue_clamp_max_argument =
+        src->tensor_epilogue_clamp_max_argument;
+    dst->tensor_epilogue_stride_argument =
+        src->tensor_epilogue_stride_argument;
+    dst->tensor_epilogue_bias_stride_argument =
+        src->tensor_epilogue_bias_stride_argument;
     dst->type_arg_count = src->type_arg_count;
     dst->is_indirect_call = src->is_indirect_call;
     dst->callee_closure_env = src->callee_closure_env;
@@ -209,13 +254,19 @@ ASTNode *ast_clone_node(ASTNode *node) {
       ast_add_child(clone, dst->object);
     if (src->argument_count > 0) {
       dst->arguments = malloc(src->argument_count * sizeof(ASTNode *));
+      dst->argument_names = calloc(src->argument_count, sizeof(char *));
       for (size_t i = 0; i < src->argument_count; i++) {
         dst->arguments[i] = ast_clone_node(src->arguments[i]);
+        dst->argument_names[i] =
+            src->argument_names && src->argument_names[i]
+                ? ast_intern_string(src->argument_names[i])
+                : NULL;
         if (dst->arguments[i])
           ast_add_child(clone, dst->arguments[i]);
       }
     } else {
       dst->arguments = NULL;
+      dst->argument_names = NULL;
     }
     if (src->type_arg_count > 0 && src->type_args) {
       dst->type_args = malloc(src->type_arg_count * sizeof(char *));
@@ -307,6 +358,55 @@ ASTNode *ast_clone_node(ASTNode *node) {
     }
     clone->data = dst;
     break;
+  }
+  case AST_GPU_LAUNCH: {
+    GpuLaunchStatement *src = (GpuLaunchStatement *)node->data;
+    ASTNode *grid[3] = {NULL, NULL, NULL};
+    ASTNode *block[3] = {NULL, NULL, NULL};
+    ASTNode **args = NULL;
+    if (!src) {
+      free(clone);
+      return NULL;
+    }
+    ASTNode *kernel = ast_clone_node(src->kernel);
+    ASTNode *shared = ast_clone_node(src->dynamic_shared_bytes);
+    ASTNode *stream = ast_clone_node(src->stream);
+    for (size_t i = 0; i < 3; i++) {
+      grid[i] = ast_clone_node(src->grid[i]);
+      block[i] = ast_clone_node(src->block[i]);
+    }
+    if (src->argument_count > 0) {
+      args = malloc(src->argument_count * sizeof(*args));
+      if (!args) {
+        ast_destroy_node(kernel);
+        ast_destroy_node(shared);
+        ast_destroy_node(stream);
+        for (size_t i = 0; i < 3; i++) {
+          ast_destroy_node(grid[i]);
+          ast_destroy_node(block[i]);
+        }
+        free(clone);
+        return NULL;
+      }
+      for (size_t i = 0; i < src->argument_count; i++) {
+        args[i] = ast_clone_node(src->arguments[i]);
+      }
+    }
+    ASTNode *built = ast_create_gpu_launch(
+        kernel, grid, block, shared, stream, args, src->argument_count,
+        node->location);
+    free(args);
+    free(clone);
+    return built;
+  }
+  case AST_BARRIER_STATEMENT: {
+    BarrierStatement *src = (BarrierStatement *)node->data;
+    ASTNode *built = src ? ast_create_barrier_statement(
+                               src->memory_regions, src->memory_order,
+                               node->location)
+                         : NULL;
+    free(clone);
+    return built;
   }
   case AST_ASSIGNMENT: {
     Assignment *src = (Assignment *)node->data;
@@ -869,6 +969,12 @@ void ast_destroy_node(ASTNode *node) {
     if (call_expr) {
       ast_free_string(call_expr->function_name);
       free(call_expr->arguments);
+      for (size_t i = 0; i < call_expr->argument_count; i++) {
+        ast_free_string(call_expr->argument_names
+                            ? call_expr->argument_names[i]
+                            : NULL);
+      }
+      free(call_expr->argument_names);
       for (size_t i = 0; i < call_expr->type_arg_count; i++) {
         ast_free_string(call_expr->type_args[i]);
       }
@@ -885,6 +991,17 @@ void ast_destroy_node(ASTNode *node) {
     }
     break;
   }
+  case AST_GPU_LAUNCH: {
+    GpuLaunchStatement *launch = (GpuLaunchStatement *)node->data;
+    if (launch) {
+      free(launch->arguments);
+      free(launch);
+    }
+    break;
+  }
+  case AST_BARRIER_STATEMENT:
+    free(node->data);
+    break;
 
   case AST_DEFER_STATEMENT: {
     DeferStatement *defer_stmt = (DeferStatement *)node->data;
@@ -1197,6 +1314,7 @@ ASTNode *ast_create_var_declaration(const char *name, const char *type_name,
   var_decl->is_exported = 0;
   var_decl->is_const = 0;
   var_decl->structural_type = 0;
+  var_decl->address_space = AST_ADDRESS_SPACE_DEFAULT;
   var_decl->link_name = NULL;
   node->data = var_decl;
 
@@ -1227,6 +1345,7 @@ ASTNode *ast_create_function_declaration(const char *name, char **param_names,
   func_decl->body = body;
   func_decl->is_exported = 0;
   func_decl->is_extern = 0;
+  func_decl->is_kernel = 0;
   func_decl->link_name = NULL;
   func_decl->type_params = NULL;
   func_decl->type_param_traits = NULL;
@@ -1482,11 +1601,47 @@ ASTNode *ast_create_call_expression(const char *function_name,
 
   call_expr->function_name = ast_intern_string(function_name);
   call_expr->argument_count = argument_count;
+  call_expr->argument_names = NULL;
   call_expr->object = NULL;
   call_expr->type_args = NULL;
   call_expr->type_arg_count = 0;
   call_expr->is_indirect_call = 0;
   call_expr->callee_closure_env = NULL;
+  call_expr->is_gpu_index = 0;
+  call_expr->is_gpu_atomic = 0;
+  call_expr->atomic_address_space = MTLC_ADDRESS_SPACE_DEFAULT;
+  call_expr->atomic_memory_order = MTLC_MEMORY_ORDER_DEFAULT;
+  call_expr->atomic_failure_order = MTLC_MEMORY_ORDER_DEFAULT;
+  call_expr->atomic_memory_scope = MTLC_MEMORY_SCOPE_DEFAULT;
+  call_expr->is_tensor_mma = 0;
+  call_expr->is_tensor_matmul = 0;
+  call_expr->is_gpu_async_copy = 0;
+  call_expr->async_copy_element_count = 0;
+  call_expr->async_copy_transaction_bytes = 0;
+  call_expr->async_copy_pending_groups = 0;
+  call_expr->async_copy_cache = MTLC_ASYNC_CACHE_DEFAULT;
+  call_expr->is_tensor_transfer = 0;
+  call_expr->tensor_transfer_desc = (MtlcTensorTransferDesc){0};
+  call_expr->tensor_transfer_view_argument = SIZE_MAX;
+  for (size_t dimension = 0; dimension < MTLC_TENSOR_MAX_RANK; dimension++)
+    call_expr->tensor_transfer_coordinate_arguments[dimension] = SIZE_MAX;
+  call_expr->tensor_mma_desc = (MtlcTensorMmaDesc){0};
+  call_expr->tensor_metadata_argument = SIZE_MAX;
+  call_expr->tensor_a_scale_argument = SIZE_MAX;
+  call_expr->tensor_b_scale_argument = SIZE_MAX;
+  call_expr->tensor_a_stride_argument = SIZE_MAX;
+  call_expr->tensor_b_stride_argument = SIZE_MAX;
+  call_expr->tensor_c_stride_argument = SIZE_MAX;
+  call_expr->tensor_d_stride_argument = SIZE_MAX;
+  call_expr->is_tensor_epilogue = 0;
+  call_expr->tensor_epilogue_desc = (MtlcTensorEpilogueDesc){0};
+  call_expr->tensor_epilogue_bias_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_alpha_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_beta_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_clamp_min_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_clamp_max_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_stride_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_bias_stride_argument = SIZE_MAX;
 
   if (argument_count > 0) {
     call_expr->arguments = malloc(argument_count * sizeof(ASTNode *));
@@ -1539,6 +1694,67 @@ ASTNode *ast_create_func_ptr_call(ASTNode *function, ASTNode **arguments,
 
   node->data = fp_call;
 
+  return node;
+}
+
+ASTNode *ast_create_gpu_launch(ASTNode *kernel, ASTNode **grid,
+                               ASTNode **block,
+                               ASTNode *dynamic_shared_bytes, ASTNode *stream,
+                               ASTNode **arguments, size_t argument_count,
+                               SourceLocation location) {
+  ASTNode *node = ast_create_node(AST_GPU_LAUNCH, location);
+  GpuLaunchStatement *launch = NULL;
+  if (!node) {
+    return NULL;
+  }
+  launch = calloc(1, sizeof(*launch));
+  if (!launch) {
+    free(node);
+    return NULL;
+  }
+  launch->kernel = kernel;
+  launch->dynamic_shared_bytes = dynamic_shared_bytes;
+  launch->stream = stream;
+  launch->argument_count = argument_count;
+  if (argument_count > 0) {
+    launch->arguments = malloc(argument_count * sizeof(*launch->arguments));
+    if (!launch->arguments) {
+      free(launch);
+      free(node);
+      return NULL;
+    }
+    memcpy(launch->arguments, arguments,
+           argument_count * sizeof(*launch->arguments));
+  }
+  ast_add_child(node, kernel);
+  for (size_t i = 0; i < 3; i++) {
+    launch->grid[i] = grid ? grid[i] : NULL;
+    launch->block[i] = block ? block[i] : NULL;
+    ast_add_child(node, launch->grid[i]);
+    ast_add_child(node, launch->block[i]);
+  }
+  ast_add_child(node, dynamic_shared_bytes);
+  ast_add_child(node, stream);
+  for (size_t i = 0; i < argument_count; i++) {
+    ast_add_child(node, launch->arguments[i]);
+  }
+  node->data = launch;
+  return node;
+}
+
+ASTNode *ast_create_barrier_statement(unsigned memory_regions,
+                                      AstMemoryOrder memory_order,
+                                      SourceLocation location) {
+  ASTNode *node = ast_create_node(AST_BARRIER_STATEMENT, location);
+  if (!node) return NULL;
+  BarrierStatement *barrier = malloc(sizeof(*barrier));
+  if (!barrier) {
+    free(node);
+    return NULL;
+  }
+  barrier->memory_regions = memory_regions;
+  barrier->memory_order = memory_order;
+  node->data = barrier;
   return node;
 }
 
@@ -1773,11 +1989,47 @@ ASTNode *ast_create_method_call(ASTNode *object, const char *method_name,
 
   call_expr->function_name = ast_intern_string(method_name);
   call_expr->argument_count = argument_count;
+  call_expr->argument_names = NULL;
   call_expr->object = object;
   call_expr->type_args = NULL;
   call_expr->type_arg_count = 0;
   call_expr->is_indirect_call = 0;
   call_expr->callee_closure_env = NULL;
+  call_expr->is_gpu_index = 0;
+  call_expr->is_gpu_atomic = 0;
+  call_expr->atomic_address_space = MTLC_ADDRESS_SPACE_DEFAULT;
+  call_expr->atomic_memory_order = MTLC_MEMORY_ORDER_DEFAULT;
+  call_expr->atomic_failure_order = MTLC_MEMORY_ORDER_DEFAULT;
+  call_expr->atomic_memory_scope = MTLC_MEMORY_SCOPE_DEFAULT;
+  call_expr->is_tensor_mma = 0;
+  call_expr->is_tensor_matmul = 0;
+  call_expr->is_gpu_async_copy = 0;
+  call_expr->async_copy_element_count = 0;
+  call_expr->async_copy_transaction_bytes = 0;
+  call_expr->async_copy_pending_groups = 0;
+  call_expr->async_copy_cache = MTLC_ASYNC_CACHE_DEFAULT;
+  call_expr->is_tensor_transfer = 0;
+  call_expr->tensor_transfer_desc = (MtlcTensorTransferDesc){0};
+  call_expr->tensor_transfer_view_argument = SIZE_MAX;
+  for (size_t dimension = 0; dimension < MTLC_TENSOR_MAX_RANK; dimension++)
+    call_expr->tensor_transfer_coordinate_arguments[dimension] = SIZE_MAX;
+  call_expr->tensor_mma_desc = (MtlcTensorMmaDesc){0};
+  call_expr->tensor_metadata_argument = SIZE_MAX;
+  call_expr->tensor_a_scale_argument = SIZE_MAX;
+  call_expr->tensor_b_scale_argument = SIZE_MAX;
+  call_expr->tensor_a_stride_argument = SIZE_MAX;
+  call_expr->tensor_b_stride_argument = SIZE_MAX;
+  call_expr->tensor_c_stride_argument = SIZE_MAX;
+  call_expr->tensor_d_stride_argument = SIZE_MAX;
+  call_expr->is_tensor_epilogue = 0;
+  call_expr->tensor_epilogue_desc = (MtlcTensorEpilogueDesc){0};
+  call_expr->tensor_epilogue_bias_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_alpha_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_beta_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_clamp_min_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_clamp_max_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_stride_argument = SIZE_MAX;
+  call_expr->tensor_epilogue_bias_stride_argument = SIZE_MAX;
 
   if (argument_count > 0) {
     call_expr->arguments = malloc(argument_count * sizeof(ASTNode *));
@@ -2052,4 +2304,3 @@ ASTNode *ast_create_closure_adapt(ASTNode *inner, const char *ctor_name,
 
   return node;
 }
-

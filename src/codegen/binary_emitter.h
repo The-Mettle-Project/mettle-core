@@ -7,6 +7,7 @@
 typedef enum {
   BINARY_TARGET_FORMAT_COFF_WIN64 = 0,
   BINARY_TARGET_FORMAT_ELF_X64,
+  BINARY_TARGET_FORMAT_ELF_ARM64,
 } BinaryTargetFormat;
 
 /* The object/executable format the running compiler targets by default: COFF on
@@ -35,6 +36,12 @@ typedef enum {
   BINARY_RELOCATION_ADDR64,
   BINARY_RELOCATION_ADDR32NB,
   BINARY_RELOCATION_SECTION_REL32,
+  /* AArch64 ELF instruction relocations. These stay target-specific rather
+   * than overloading REL32: their relocated fields and addend rules are
+   * defined by AAELF64, not by the x86/COFF displacement convention. */
+  BINARY_RELOCATION_ARM64_CALL26,
+  BINARY_RELOCATION_ARM64_ADR_PREL_PG_HI21,
+  BINARY_RELOCATION_ARM64_ADD_ABS_LO12_NC,
 } BinaryRelocationKind;
 
 typedef struct {

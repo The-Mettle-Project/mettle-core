@@ -567,6 +567,12 @@ static Token lexer_lex_identifier_or_keyword(Lexer *lexer) {
     token.type = TOKEN_KERNEL;
   else if (strcmp(token.value, "dispatch") == 0)
     token.type = TOKEN_DISPATCH;
+  else if (strcmp(token.value, "workgroup") == 0)
+    token.type = TOKEN_WORKGROUP;
+  else if (strcmp(token.value, "private") == 0)
+    token.type = TOKEN_PRIVATE;
+  else if (strcmp(token.value, "barrier") == 0)
+    token.type = TOKEN_BARRIER;
   else if (strcmp(token.value, "int8") == 0)
     token.type = TOKEN_INT8;
   else if (strcmp(token.value, "int16") == 0)

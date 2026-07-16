@@ -22,7 +22,9 @@
 #ifndef MTLC_BUILD_H
 #define MTLC_BUILD_H
 
+#include "intrinsic.h"
 #include "module.h"
+#include "tensor.h"
 #include "type.h"
 
 #include <stddef.h>
@@ -40,6 +42,76 @@ typedef struct MtlcFn MtlcFn;
 typedef int MtlcValue;
 #define MTLC_NO_VALUE (-1)
 
+/* Optional tensor operands use MTLC_NO_VALUE when the descriptor does not
+ * request them. Dense unscaled operations need only A/B/C/D. Structured
+ * sparsity and scaled low-precision formats can additionally carry metadata
+ * and scale tables without changing the shared operation's identity. Sparse
+ * metadata is the canonical uint8 group-mask matrix defined by tensor.h; scale
+ * pointers follow tensor.h's canonical A-row/B-column matrices. Packed data
+ * strides and pointer arithmetic remain counts of stored elements. A zero
+ * descriptor data leading dimension selects the corresponding masked runtime
+ * integer value below; nonzero data and scale dimensions remain compile-time
+ * constants. */
+typedef struct {
+  MtlcValue a;
+  MtlcValue b;
+  MtlcValue c;
+  MtlcValue d;
+  MtlcValue metadata;
+  MtlcValue a_scale;
+  MtlcValue b_scale;
+  unsigned runtime_stride_mask;
+  MtlcValue a_leading_dimension;
+  MtlcValue b_leading_dimension;
+  MtlcValue c_leading_dimension;
+  MtlcValue d_leading_dimension;
+} MtlcTensorMmaOperands;
+
+/* One descriptor-sized output region of a whole matrix multiplication. The
+ * matrix bundle has the same exact format/layout/stride contract as one MMA;
+ * row_origin, column_origin, and problem_m/n/k are unsigned scalar values
+ * uniform at the descriptor's collective scope. All four matrix leading
+ * dimensions must be explicit in the descriptor or selected by the matrix
+ * bundle's runtime-stride mask. */
+typedef struct {
+  MtlcTensorMmaOperands matrix;
+  MtlcValue row_origin;
+  MtlcValue column_origin;
+  MtlcValue problem_m;
+  MtlcValue problem_n;
+  MtlcValue problem_k;
+} MtlcTensorMatmulOperands;
+
+/* Optional epilogue operands use MTLC_NO_VALUE unless selected by the
+ * descriptor. Operand order never exposes a target fragment representation. */
+typedef struct {
+  MtlcValue destination;
+  MtlcValue bias;
+  MtlcValue alpha;
+  MtlcValue beta;
+  MtlcValue clamp_min;
+  MtlcValue clamp_max;
+  MtlcValue leading_dimension;
+  MtlcValue bias_leading_dimension;
+} MtlcTensorEpilogueOperands;
+
+/* Operands for one rank-aware tensor transfer. Coordinates are signed int32
+ * logical element indices. Set `prepared_view` to MTLC_NO_VALUE for the
+ * portable path; a provider-specific non-null handle may enable native tensor
+ * transfer hardware without changing the operation's semantics. */
+typedef struct {
+  MtlcValue destination;
+  MtlcValue source;
+  MtlcValue prepared_view;
+  MtlcValue coordinates[MTLC_TENSOR_MAX_RANK];
+} MtlcTensorTransferOperands;
+
+typedef struct {
+  MtlcValue x;
+  MtlcValue y;
+  MtlcValue z;
+} MtlcDim3;
+
 /* Create/destroy a builder. Destroying a builder you have not finished frees
  * everything it holds; mtlc_builder_finish consumes the builder instead. */
 MtlcBuilder *mtlc_builder_create(void);
@@ -56,6 +128,16 @@ MtlcFn *mtlc_builder_function(MtlcBuilder *builder, const char *name,
                              const char *const *param_names,
                              const MtlcType *const *param_types,
                              size_t param_count, int is_extern);
+
+/* Define a GPU entry-point function. Kernel entry points always return void
+ * and accept only POD scalar parameters or pointers to POD scalars. Unlike an
+ * ordinary mtlc_builder_function definition, a kernel is exported as a device
+ * entry point by the selected GPU emitter. Returns NULL when the signature is
+ * not a valid kernel ABI or on allocation failure. */
+MtlcFn *mtlc_builder_kernel(MtlcBuilder *builder, const char *name,
+                           const char *const *param_names,
+                           const MtlcType *const *param_types,
+                           size_t param_count);
 
 /* Declare a module-level global variable of a scalar `type`, optionally with a
  * constant integer initializer (pass 0 for zero-initialized). `is_extern` != 0
@@ -80,6 +162,23 @@ MtlcValue mtlc_const_float(MtlcFn *fn, const MtlcType *type, double value);
  * use the returned handle, mtlc_assign writes through it. */
 MtlcValue mtlc_local(MtlcFn *fn, const char *name, const MtlcType *type);
 
+/* Allocate a statically sized device-memory array and return an explicitly
+ * addressed pointer to its first element. WORKGROUP is shared by a workgroup;
+ * PRIVATE is per work-item. This is legal only in kernels, and `count` must be
+ * nonzero and fit the portable 32-bit static-array extent contract. It is a
+ * semantic memory operation, not a target-API spelling. */
+MtlcValue mtlc_address_space_alloc(MtlcFn *fn, const char *name,
+                                   const MtlcType *element_type, size_t count,
+                                   MtlcAddressSpace address_space);
+
+/* Return an unbounded typed view of the launch-provided workgroup-memory
+ * arena. Every dynamic view in a kernel aliases the same base; callers can
+ * partition it with ordinary element offsets and must keep every access inside
+ * the dynamic_shared_bytes supplied at launch. This is a neutral memory
+ * contract; the selected backend owns its physical representation. */
+MtlcValue mtlc_dynamic_workgroup_view(MtlcFn *fn, const char *name,
+                                      const MtlcType *element_type);
+
 /* Reference a module-level global declared with mtlc_builder_global. Reads use
  * the handle; mtlc_assign writes through it. */
 MtlcValue mtlc_global_ref(MtlcFn *fn, const char *name);
@@ -103,6 +202,143 @@ MtlcValue mtlc_unary(MtlcFn *fn, const char *op, MtlcValue operand,
  * or MTLC_NO_VALUE when `return_type` is void. */
 MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
                    size_t arg_count, const MtlcType *return_type);
+
+/* Emit a target-neutral intrinsic. Unlike mtlc_call, this does not ask the
+ * backend to infer semantics from a symbol name. The intrinsic's documented
+ * arity is checked; returns MTLC_NO_VALUE for void or on builder error.
+ *
+ * The subgroup family exposes implementation-sized execution subgroups without
+ * naming a warp or wavefront: LOCAL_ID/SIZE take no arguments, BROADCAST_* takes
+ * (value, uniform source_local_id), and REDUCE_ADD_* takes one value. Every live
+ * invocation in the subgroup must execute a collective uniformly. The selected
+ * target profile defines the subgroup size. */
+MtlcValue mtlc_intrinsic(MtlcFn *fn, MtlcIntrinsic intrinsic,
+                         const MtlcValue *args, size_t arg_count,
+                         const MtlcType *return_type);
+
+/* Emit a memory-bearing intrinsic with an explicit target-neutral contract.
+ * The current surface accepts GPU atomic load/store and RMW intrinsics;
+ * invalid order/scope/address-space combinations fail the builder instead of
+ * being weakened. Loads accept relaxed/acquire/seq-cst; stores accept
+ * relaxed/release/seq-cst. */
+MtlcValue mtlc_intrinsic_memory(MtlcFn *fn, MtlcIntrinsic intrinsic,
+                                const MtlcValue *args, size_t arg_count,
+                                const MtlcType *return_type,
+                                MtlcAddressSpace address_space,
+                                MtlcMemoryOrder order,
+                                MtlcMemoryScope scope);
+
+/* Emit an atomic compare-exchange returning the observed old value. `args`
+ * are (base, element_index, expected, desired). Success and failure orders are
+ * independent: failure may be relaxed/acquire/seq_cst, may not be stronger
+ * than success, and may never be release/acq_rel. */
+MtlcValue mtlc_atomic_compare_exchange(
+    MtlcFn *fn, MtlcIntrinsic intrinsic, const MtlcValue args[4],
+    const MtlcType *return_type, MtlcAddressSpace address_space,
+    MtlcMemoryOrder success_order, MtlcMemoryOrder failure_order,
+    MtlcMemoryScope scope);
+
+/* Synchronize every work-item in the current workgroup and publish the selected
+ * memory regions with the requested order. `memory_regions` is a bitwise OR of
+ * MtlcMemoryRegion flags. Backends may strengthen but never weaken the order.
+ * Every live work-item must execute this collective uniformly. */
+void mtlc_workgroup_barrier(MtlcFn *fn, MtlcMemoryOrder order,
+                            unsigned memory_regions);
+
+/* Initiate a per-work-item copy of `element_count` contiguous scalar elements
+ * from global storage to workgroup storage. The byte span must be a multiple
+ * of four and at most 65536 bytes. Native asynchronous backends may divide it
+ * into multiple transactions; other backends copy synchronously. Every path
+ * must eventually commit and wait for all groups before returning. The caller
+ * must supply source and destination addresses aligned to transaction_bytes;
+ * this dynamic precondition cannot be established by the builder. Waiting
+ * makes a thread's copies complete; use a workgroup barrier before other work
+ * items consume those destinations. Reading an overlapping destination before
+ * its wait is complete is invalid. */
+void mtlc_async_copy_workgroup(MtlcFn *fn, MtlcValue destination,
+                               MtlcValue source,
+                               const MtlcType *element_type,
+                               uint32_t element_count,
+                               uint32_t transaction_bytes,
+                               MtlcAsyncCache cache);
+
+/* Close the current per-work-item asynchronous-copy group. Empty groups are
+ * permitted. */
+void mtlc_async_copy_commit(MtlcFn *fn);
+
+/* Wait until at most `pending_groups` newer groups remain outstanding. The
+ * public portable range is 0..7; every function exit requires zero. */
+void mtlc_async_copy_wait(MtlcFn *fn, uint32_t pending_groups);
+
+/* Transfer one complete rectangular tensor tile collectively between global
+ * and workgroup storage. Every live work-item in the workgroup must execute
+ * the operation uniformly with identical pointers, coordinates, and optional
+ * prepared-view handle. The call returns only after the destination is ready
+ * for ordinary accesses by every participating work-item. */
+void mtlc_tensor_transfer_workgroup(
+    MtlcFn *fn, const MtlcTensorTransferDesc *desc,
+    const MtlcTensorTransferOperands *operands);
+
+/* Emit one cooperative D=A*B+C tensor tile. Arguments are base pointers in
+ * A, B, C, D order. The descriptor carries all arithmetic, shape, layout,
+ * stride, precision, packing, overflow, sparsity, scale, and collective-scope
+ * semantics; a backend must implement that exact contract or reject it. */
+void mtlc_tensor_mma(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                     MtlcValue a, MtlcValue b, MtlcValue c, MtlcValue d);
+
+/* General operand form for sparse/scaled operations and any mixture of static
+ * and runtime data leading dimensions. Sparse metadata must be a uint8 pointer.
+ * A runtime-stride mask bit requires the
+ * matching descriptor data dimension to be zero and the matching value to be
+ * a scalar integer uniform at the collective scope. Scale leading dimensions
+ * are static descriptor values; zero means their canonical dense minimum. */
+void mtlc_tensor_mma_ex(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                        const MtlcTensorMmaOperands *operands);
+
+/* Emit the exact sequential composition of `tile_count` tensor MMAs as one
+ * neutral accumulator chain. Tile 0 computes D=A*B+C; every later tile must
+ * use that same D as both C and D. Accumulator/result format, C/D layout, and
+ * C/D stride must match so a capable backend may keep the tile resident and
+ * perform one initial C load and one final D store. A backend may replay the
+ * component operations without changing semantics. */
+void mtlc_tensor_mma_chain(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                           const MtlcTensorMmaOperands *tiles,
+                           size_t tile_count);
+
+/* Convenience for a dense, unscaled operation with four runtime leading
+ * dimensions. The descriptor's four leading-dimension fields must all be zero.
+ * Use mtlc_tensor_mma_ex when metadata or scale operands are also required. */
+void mtlc_tensor_mma_strided(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                             MtlcValue a, MtlcValue b,
+                             MtlcValue c, MtlcValue d,
+                             MtlcValue lda, MtlcValue ldb,
+                             MtlcValue ldc, MtlcValue ldd);
+
+/* Compute every in-bounds output in one descriptor-sized whole-matrix region:
+ * D[row,col] = C[row,col] + sum(q=0..problem_k-1) A(row,q)*B(q,col).
+ * The operation is a neutral exact semantic contract. A backend may use native
+ * matrix instructions for full interior chunks and must handle all M/N/K edge
+ * work exactly or reject the descriptor before emitting a module. */
+void mtlc_tensor_matmul(MtlcFn *fn, const MtlcTensorMmaDesc *desc,
+                        const MtlcTensorMatmulOperands *operands);
+
+/* Emit one cooperative, in-place tensor epilogue. Optional values must match
+ * the descriptor exactly. A capable backend may fuse it into a native tensor
+ * path; portable lowering remains an ordered cooperative memory replay. */
+void mtlc_tensor_epilogue(
+    MtlcFn *fn, const MtlcTensorEpilogueDesc *desc,
+    const MtlcTensorEpilogueOperands *operands);
+
+/* Emit a semantic asynchronous GPU launch. `kernel_handle` and `stream` are
+ * runtime-provider handles; grid/block are full 3-D dimensions.
+ * `dynamic_shared_bytes` is a scalar byte count. `arg_types` must describe
+ * each kernel argument's exact scalar/pointer ABI width. Host codegen lowers
+ * this to the provider-neutral mtlc_gpu_launch_checked ABI; device-module
+ * emitters never consume host launch operations. */
+void mtlc_gpu_launch(MtlcFn *fn, MtlcValue kernel_handle, MtlcDim3 grid,
+                     MtlcDim3 block, MtlcValue dynamic_shared_bytes,
+                     MtlcValue stream, const MtlcValue *args,
+                     const MtlcType *const *arg_types, size_t arg_count);
 
 /* Real address of a function symbol (defined or extern-declared): usable as
  * a callback for OS/CRT APIs and with mtlc_call_indirect. */

@@ -74,11 +74,36 @@ static MTLC_THREAD_LOCAL const MtlcType **g_ptr_cache;
 static MTLC_THREAD_LOCAL size_t g_ptr_cache_count, g_ptr_cache_cap;
 
 const MtlcType *mtlc_type_pointer(const MtlcType *base) {
+  return mtlc_type_pointer_in(base, MTLC_ADDRESS_SPACE_GENERIC);
+}
+
+static const char *mtlc_address_space_name(MtlcAddressSpace address_space) {
+  switch (address_space) {
+  case MTLC_ADDRESS_SPACE_GLOBAL: return "global";
+  case MTLC_ADDRESS_SPACE_WORKGROUP: return "workgroup";
+  case MTLC_ADDRESS_SPACE_CONSTANT: return "constant";
+  case MTLC_ADDRESS_SPACE_PRIVATE: return "private";
+  case MTLC_ADDRESS_SPACE_DEFAULT:
+  case MTLC_ADDRESS_SPACE_GENERIC:
+    return "generic";
+  }
+  return NULL;
+}
+
+const MtlcType *mtlc_type_pointer_in(const MtlcType *base,
+                                     MtlcAddressSpace address_space) {
   if (!base) {
     return NULL;
   }
+  if (!mtlc_address_space_name(address_space)) {
+    return NULL;
+  }
+  if (address_space == MTLC_ADDRESS_SPACE_DEFAULT) {
+    address_space = MTLC_ADDRESS_SPACE_GENERIC;
+  }
   for (size_t i = 0; i < g_ptr_cache_count; i++) {
-    if (g_ptr_cache[i]->base_type == (MtlcType *)base) {
+    if (g_ptr_cache[i]->base_type == (MtlcType *)base &&
+        g_ptr_cache[i]->address_space == address_space) {
       return g_ptr_cache[i];
     }
   }
@@ -90,17 +115,25 @@ const MtlcType *mtlc_type_pointer(const MtlcType *base) {
   p->size = 8;
   p->alignment = 8;
   p->base_type = (MtlcType *)base;
-  /* name: "<base>*" (e.g. "int64*", "float32**") -- parseable anywhere a
-   * type NAME is carried (DECLARE_LOCAL text, parameter type names). */
+  p->address_space = address_space;
+  /* Generic pointers retain the source-compatible "T*" spelling. Explicit
+   * spaces are part of the canonical name so a module can register global and
+   * workgroup pointers to the same element type without aliasing them. */
   {
     const char *bn = base->name ? base->name : mtlc_type_kind_name(base->kind);
-    size_t n = strlen(bn) + 2;
+    const char *asn = mtlc_address_space_name(address_space);
+    int explicit_space = address_space != MTLC_ADDRESS_SPACE_GENERIC;
+    size_t n = strlen(bn) + 2 + (explicit_space ? strlen(asn) + 2 : 0);
     char *nm = (char *)malloc(n);
     if (!nm) {
       free(p);
       return NULL;
     }
-    snprintf(nm, n, "%s*", bn);
+    if (explicit_space) {
+      snprintf(nm, n, "%s:%s*", asn, bn);
+    } else {
+      snprintf(nm, n, "%s*", bn);
+    }
     p->name = nm;
   }
   if (g_ptr_cache_count == g_ptr_cache_cap) {

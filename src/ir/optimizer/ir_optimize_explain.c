@@ -1687,6 +1687,28 @@ void ir_explain_backend_flush(void) {
   ir_explain_finalize(0);
 }
 
+void ir_explain_target_flush(const char *target_name) {
+  if (!g_explain) {
+    return;
+  }
+
+  const char *target = target_name && *target_name ? target_name : "non-native";
+  g_digest.backend_ok = 0;
+  g_digest.backend_total = 0;
+  ir_explain_json_raw(
+      "\"backend\":{\"ok\":0,\"total\":0,\"instructions\":0,"
+      "\"okInstructions\":0,\"groups\":[],\"target\":");
+  ir_explain_json_str(target);
+  ir_explain_json_raw("},");
+
+  ir_explain_print_header("backend report");
+  ir_explain_emit(
+      "  target-neutral optimized IR emitted through the %s backend; "
+      "native MIR eligibility does not apply\n\n",
+      target);
+  ir_explain_finalize(0);
+}
+
 /* ---- hypothesis clone ------------------------------------------------------
  * A scratch deep copy of a function for simulating a suggested fix: the
  * caller mutates the clone, re-runs the vectorization stages on it, inspects
@@ -1712,6 +1734,7 @@ IRFunction *ir_explain_clone_function(const IRFunction *src) {
   clone->is_inline = src->is_inline;
   clone->is_noinline = src->is_noinline;
   clone->is_pure = src->is_pure;
+  clone->is_kernel = src->is_kernel;
   for (size_t i = 0; i < src->instruction_count; i++) {
     if (!ir_function_append_instruction(clone, &src->instructions[i])) {
       ir_function_destroy(clone);

@@ -389,15 +389,19 @@ int ir_operand_is_propagatable_value(const IROperand *operand) {
 }
 
 void ir_instruction_clear_arguments(IRInstruction *instruction) {
-  if (!instruction || !instruction->arguments) {
+  if (!instruction) {
     return;
   }
 
-  for (size_t i = 0; i < instruction->argument_count; i++) {
-    ir_operand_destroy(&instruction->arguments[i]);
+  if (instruction->arguments) {
+    for (size_t i = 0; i < instruction->argument_count; i++) {
+      ir_operand_destroy(&instruction->arguments[i]);
+    }
+    free(instruction->arguments);
   }
-  free(instruction->arguments);
+  free(instruction->argument_types);
   instruction->arguments = NULL;
+  instruction->argument_types = NULL;
   instruction->argument_count = 0;
 }
 
@@ -415,6 +419,14 @@ void ir_instruction_make_nop(IRInstruction *instruction) {
     instruction->text = NULL;
   }
   instruction->is_float = 0;
+  instruction->async_copy_element_count = 0;
+  instruction->async_copy_transaction_bytes = 0;
+  instruction->async_copy_pending_groups = 0;
+  instruction->async_copy_cache = MTLC_ASYNC_CACHE_DEFAULT;
+  instruction->async_copy_generated = 0;
+  instruction->tensor_residency_id = 0;
+  instruction->tensor_residency_role = IR_TENSOR_RESIDENCY_NONE;
+  instruction->tensor_residency_scope = IR_TENSOR_RESIDENCY_SCOPE_NONE;
   instruction->ast_ref = NULL;
   instruction->op = IR_OP_NOP;
 }
@@ -1839,11 +1851,6 @@ int ir_collect_instruction_temp_uses(IRTempUseMap *uses,
         !ir_collect_operand_temp_use(uses, &instruction->rhs)) {
       return 0;
     }
-    for (size_t i = 0; i < instruction->argument_count; i++) {
-      if (!ir_collect_operand_temp_use(uses, &instruction->arguments[i])) {
-        return 0;
-      }
-    }
     break;
 
   case IR_OP_ASSIGN:
@@ -1862,15 +1869,19 @@ int ir_collect_instruction_temp_uses(IRTempUseMap *uses,
         !ir_collect_operand_temp_use(uses, &instruction->rhs)) {
       return 0;
     }
-    for (size_t i = 0; i < instruction->argument_count; i++) {
-      if (!ir_collect_operand_temp_use(uses, &instruction->arguments[i])) {
-        return 0;
-      }
-    }
     break;
-
   default:
     break;
+  }
+
+  /* The argument vector is always an input list, including for first-class
+   * operations that do not otherwise fit the scalar opcode groups above (for
+   * example TENSOR_MMA). Keep this generic so adding a neutral operation cannot
+   * make dead-temp elimination erase its operand producers. */
+  for (size_t i = 0; i < instruction->argument_count; i++) {
+    if (!ir_collect_operand_temp_use(uses, &instruction->arguments[i])) {
+      return 0;
+    }
   }
 
   return 1;

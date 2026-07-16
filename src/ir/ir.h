@@ -10,6 +10,8 @@
  * operates on this IR alone. */
 #include "../simd_attr.h"
 #include "../source_location.h"
+#include "mtlc/intrinsic.h"
+#include "mtlc/tensor.h"
 #include "mtlc/type.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -56,6 +58,43 @@ typedef enum {
   IR_OP_BRANCH_ZERO,
   IR_OP_BRANCH_EQ,
   IR_OP_DECLARE_LOCAL,
+  /* Device storage/view. dest receives a pointer of value_type. A positive rhs
+   * is a static element count in WORKGROUP or PRIVATE; rhs zero is an unbounded
+   * typed view of the launch-provided WORKGROUP arena. All zero-extent views in
+   * one kernel alias the same arena. */
+  IR_OP_ADDRESS_SPACE_ALLOC,
+  /* Collective workgroup execution + memory barrier. memory_regions is a mask
+   * of MtlcMemoryRegion and memory_order is explicit. */
+  IR_OP_BARRIER,
+  /* Per-work-item global -> workgroup staged copy. arguments[0] is the
+   * destination pointer and arguments[1] the source pointer. The fixed element
+   * count/type define the byte span. COMMIT closes the current per-work-item
+   * copy group; WAIT bounds the number of newer committed groups that may
+   * remain pending. Backends without native async copies replay synchronously. */
+  IR_OP_ASYNC_COPY,
+  IR_OP_ASYNC_COMMIT,
+  IR_OP_ASYNC_WAIT,
+  /* Collective rank-1..5 rectangular tensor movement. The descriptor and raw
+   * memory operands are complete portable semantics; an optional prepared
+   * view is acceleration metadata, never a backend encoding in shared IR. */
+  IR_OP_TENSOR_TRANSFER,
+  /* Cooperative whole-tile D=A*B+C. arguments are A/B/C/D pointers and
+   * tensor_mma carries shape, element formats, layouts, leading dimensions,
+   * and collective scope without exposing a backend fragment ABI. */
+  IR_OP_TENSOR_MMA,
+  /* Cooperative bounded matrix region. The ordinary tensor-MMA operand bundle
+   * is followed by unsigned row origin, column origin, and problem M/N/K.
+   * Every in-bounds result in the descriptor-sized region is computed exactly;
+   * M/N/K edges are semantic work, never implicit truncation or padding. */
+  IR_OP_TENSOR_MATMUL,
+  /* Cooperative in-place alpha/bias/activation over one logical tensor tile.
+   * The descriptor and ordinary memory/scalar operands are complete portable
+   * semantics; fragment mappings remain backend-private. */
+  IR_OP_TENSOR_EPILOGUE,
+  /* Commit a verified loop-carried tensor accumulator to its D tile. A
+   * replaying backend treats this marker as a no-op; a residency-aware backend
+   * delays the intermediate D stores until this point. */
+  IR_OP_TENSOR_COMMIT,
   IR_OP_ASSIGN,
   IR_OP_ADDRESS_OF,
   IR_OP_LOAD,
@@ -66,6 +105,12 @@ typedef enum {
   IR_OP_ROTATE_ADD,
   IR_OP_CALL,
   IR_OP_CALL_INDIRECT,
+  /* Target-neutral asynchronous GPU launch. lhs is the runtime kernel handle.
+   * arguments[0..7] are grid xyz, block xyz, dynamic-shared bytes, and stream;
+   * arguments[8..] are kernel arguments. argument_types is parallel to
+   * arguments and is required for the kernel-argument suffix so host-runtime
+   * lowering can marshal exact ABI widths without frontend knowledge. */
+  IR_OP_GPU_LAUNCH,
   IR_OP_NEW,
   IR_OP_RETURN,
   IR_OP_INLINE_ASM,
@@ -286,6 +331,8 @@ typedef enum {
   IR_OP_SELECT
 } IROpcode;
 
+#define IR_GPU_LAUNCH_CONTROL_ARGS 8u
+
 /* Chain operation codes for IR_OP_SIMD_BYTE_MAP arguments. Each step applies
  * `b = b <op> k` in uint8 (mod 256) arithmetic. The numeric values are part of
  * the IR contract between the recognizer and the backend kernel. */
@@ -298,14 +345,68 @@ typedef enum {
   IR_BYTE_MAP_OR = 5
 } IRByteMapOp;
 
+typedef enum {
+  IR_TENSOR_RESIDENCY_NONE = 0,
+  IR_TENSOR_RESIDENCY_START = 1,
+  IR_TENSOR_RESIDENCY_UPDATE = 2,
+  IR_TENSOR_RESIDENCY_COMMIT = 3
+} IRTensorResidencyRole;
+
+typedef enum {
+  IR_TENSOR_RESIDENCY_SCOPE_NONE = 0,
+  IR_TENSOR_RESIDENCY_SCOPE_LOOP = 1,
+  IR_TENSOR_RESIDENCY_SCOPE_PIPELINE = 2
+} IRTensorResidencyScope;
+
 typedef struct {
   IROpcode op;
+  /* Semantic identity for a target-neutral intrinsic call. `text` is retained
+   * only for dumps/legacy source aliases; code generators must use this enum. */
+  MtlcIntrinsic intrinsic;
+  /* Explicit memory contract for memory-bearing intrinsics. DEFAULT values
+   * exist only for compatibility; device backends normalize legacy atomics to
+   * global/relaxed/device and otherwise reject invalid combinations. */
+  MtlcAddressSpace address_space;
+  MtlcMemoryOrder memory_order;
+  /* Compare-exchange has a distinct failure/read order. It is RELAXED for
+   * non-CAS atomics and must never be Release or AcqRel for CAS. */
+  MtlcMemoryOrder failure_memory_order;
+  MtlcMemoryScope memory_scope;
+  unsigned memory_regions;
+  uint32_t async_copy_element_count;
+  uint32_t async_copy_transaction_bytes;
+  uint32_t async_copy_pending_groups;
+  MtlcAsyncCache async_copy_cache;
+  /* Set only when the shared optimizer promoted an ordinary typed
+   * global-load/workgroup-store pair. This is provenance for dumps,
+   * diagnostics, and backend comments; it never changes copy semantics. */
+  int async_copy_generated;
+  MtlcTensorTransferDesc tensor_transfer;
+  int tensor_transfer_has_prepared_view;
+  MtlcTensorMmaDesc tensor_mma;
+  MtlcTensorEpilogueDesc tensor_epilogue;
+  /* Number of sequential D=A*B+C tiles packed into arguments. Zero and one
+   * both mean the legacy single tile. For a chain, each tile contributes one
+   * complete operand bundle; C[i] must be D[i-1] and every D must name the
+   * same output tile. This is a semantic composition, not a fragment ABI. */
+  uint32_t tensor_mma_count;
+  /* A nonzero group connects an initial MMA, one or more updates, and one commit.
+   * Scope records whether neutral legality proved a loop-carried region or an
+   * asynchronously staged straight-line pipeline. Ordinary MMA semantics
+   * remain replayable; this metadata never exposes a backend fragment ABI. */
+  uint32_t tensor_residency_id;
+  IRTensorResidencyRole tensor_residency_role;
+  IRTensorResidencyScope tensor_residency_scope;
   SourceLocation location;
   IROperand dest;
   IROperand lhs;
   IROperand rhs;
   char *text;
   IROperand *arguments;
+  /* Parallel type metadata for arguments. Entries may be NULL for ordinary
+   * calls and launch controls; launch kernel arguments must carry a type.
+   * The pointer array is owned, the MtlcType descriptors are borrowed. */
+  MtlcType **argument_types;
   size_t argument_count;
   int is_float;
   /* Width of the floating result when is_float is set: 32 or 64. 0 means
@@ -340,6 +441,37 @@ typedef struct {
    * applicable or synthesized by the optimizer. */
   MtlcType *value_type;
 } IRInstruction;
+
+/* Compatibility mapping used at frontend/public-call boundaries. It is the
+ * only place legacy source spellings become semantic GPU operations. */
+MtlcIntrinsic ir_intrinsic_from_name(const char *name);
+const char *ir_intrinsic_name(MtlcIntrinsic intrinsic);
+int ir_intrinsic_arity(MtlcIntrinsic intrinsic);
+int ir_intrinsic_is_atomic(MtlcIntrinsic intrinsic);
+int ir_intrinsic_is_compare_exchange(MtlcIntrinsic intrinsic);
+int ir_intrinsic_is_atomic_load(MtlcIntrinsic intrinsic);
+int ir_intrinsic_is_atomic_store(MtlcIntrinsic intrinsic);
+MtlcTypeKind ir_intrinsic_atomic_value_kind(MtlcIntrinsic intrinsic);
+MtlcTypeKind ir_intrinsic_atomic_result_kind(MtlcIntrinsic intrinsic);
+int ir_intrinsic_is_subgroup(MtlcIntrinsic intrinsic);
+MtlcTypeKind ir_intrinsic_subgroup_result_kind(MtlcIntrinsic intrinsic);
+int ir_tensor_mma_desc_valid(const MtlcTensorMmaDesc *desc);
+int ir_tensor_epilogue_desc_valid(const MtlcTensorEpilogueDesc *desc);
+int ir_tensor_transfer_desc_valid(const MtlcTensorTransferDesc *desc);
+size_t ir_tensor_transfer_element_bytes(MtlcTensorElement element);
+size_t ir_tensor_transfer_tile_elements(const MtlcTensorTransferDesc *desc);
+size_t ir_tensor_transfer_operand_count(const MtlcTensorTransferDesc *desc,
+                                        int has_prepared_view);
+size_t ir_tensor_mma_operand_count(const MtlcTensorMmaDesc *desc);
+size_t ir_tensor_matmul_operand_count(const MtlcTensorMmaDesc *desc);
+size_t ir_tensor_epilogue_operand_count(
+    const MtlcTensorEpilogueDesc *desc);
+unsigned ir_tensor_mma_runtime_stride_mask(const MtlcTensorMmaDesc *desc);
+size_t ir_tensor_mma_instruction_count(const IRInstruction *instruction);
+int ir_tensor_mma_desc_equal(const MtlcTensorMmaDesc *lhs,
+                             const MtlcTensorMmaDesc *rhs);
+int ir_operand_same(const IROperand *lhs, const IROperand *rhs);
+MtlcTypeKind ir_tensor_element_storage_kind(MtlcTensorElement element);
 
 typedef struct {
   const char *label;
@@ -379,6 +511,7 @@ typedef struct {
   int is_pure;            // `@pure`    : side-effect-free; enables call LICM
   int is_noalloc;         // `@noalloc` : proven allocation-free or error
   int is_test;            // `@test`    : compile-time unit test (mettle test)
+  int is_kernel;          // GPU entry point; ordinary functions are not entries
 } IRFunction;
 
 typedef struct {
@@ -421,6 +554,7 @@ typedef struct {
   IRModuleSymbolKind kind;
   int is_extern;
   int has_body;             /* functions: defined (has an IR body) vs declared */
+  int is_kernel;            /* functions: GPU entry point */
   char *link_name;          /* owned; object-file linkage name, or NULL = name */
   long long const_value;    /* IR_MODSYM_CONSTANT: folded integer value */
   /* Global-variable initializer, evaluated to a constant at lowering. */
@@ -459,6 +593,11 @@ typedef struct {
   IRTypeEntry *type_registry;
   size_t type_registry_count;
   size_t type_registry_capacity;
+  /* Backend-synthesized descriptors (currently launch parameter arrays).
+   * Frontend-registered types are borrowed; these entries are owned here. */
+  MtlcType **owned_types;
+  size_t owned_type_count;
+  size_t owned_type_capacity;
   /* Backend-owned module symbol table (globals/functions/externs + folded
    * constants), populated at lowering. Replaces codegen's frontend SymbolTable
    * lookups and its walk of the AST declaration list. */
@@ -472,6 +611,16 @@ typedef struct {
    * body means "eliminated as unreachable", which is expected, not a bug. */
   int dead_functions_eliminated;
 } IRProgram;
+
+/* Reachability-ordered device call graph. `order` is postorder (callees before
+ * callers), contains kernels plus ordinary helpers reachable from a kernel,
+ * and never contains unrelated host functions. */
+typedef struct {
+  size_t *order;
+  size_t count;
+  unsigned char *reachable;
+  size_t function_count;
+} IRGpuCallGraph;
 
 IROperand ir_operand_none(void);
 IROperand ir_operand_temp(const char *name);
@@ -541,6 +690,17 @@ int ir_instruction_dump(const IRInstruction *instruction,
  *   - call "free"        -> call "mettle_heap_free"
  * Returns 1 on success, 0 on allocation failure. */
 int ir_program_route_to_native_heap(IRProgram *program);
+
+/* Lower semantic GPU launches to the stable host-runtime provider ABI
+ * `mtlc_gpu_launch_checked(handle, grid3, block3, shared, stream, params,
+ * nargs)`. Idempotent: a program with no IR_OP_GPU_LAUNCH is unchanged.
+ * The provider owns host GPU runtime/API policy; this pass owns only scalar
+ * argument marshalling. Run before host optimization/codegen, never for device
+ * modules. */
+int ir_program_lower_gpu_launches(IRProgram *program);
+int ir_program_build_gpu_call_graph(const IRProgram *program,
+                                    IRGpuCallGraph *graph, char **error);
+void ir_gpu_call_graph_destroy(IRGpuCallGraph *graph);
 
 /* Executable-build dead code elimination: drops every function unreachable
  * from `main`. A function is considered referenced when any instruction of a

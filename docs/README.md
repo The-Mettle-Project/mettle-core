@@ -32,6 +32,9 @@ Driver-facing views of the same machinery:
 - [Linker and build pipelines](linker-build-pipelines.md): which linker runs
   for each `--build` combination.
 - [GPU offload](gpu.md): the PTX and SPIR-V targets from Mettle source.
+- [GPU architecture and acceptance contract](gpu-architecture.md): the GB10 /
+  AArch64 target matrix, frontend/backend boundary, honest gap table, and the
+  gates required before making parity or performance claims.
 - [ML-driven IR optimization](ml-opt.md), [Translation
   validation](translation-validation.md), [Profile-guided
   optimization](pgo.md): `--ml-opt`, `--verify`, `--pgo`.

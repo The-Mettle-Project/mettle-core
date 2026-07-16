@@ -70,9 +70,9 @@ flowchart LR
 | Target | `MtlcArch` | Product |
 |--|--|--|
 | x86-64 (+ AVX2) | `MTLC_ARCH_X86_64` | host-format relocatable object, or a linked executable |
-| AArch64 | `MTLC_ARCH_ARM64` | self-contained static ELF executable |
-| NVIDIA PTX | `MTLC_ARCH_PTX` | PTX text module, one kernel per function |
-| SPIR-V (OpenCL 1.2) | `MTLC_ARCH_SPIRV` | binary module, one kernel per function |
+| AArch64 | `MTLC_ARCH_ARM64` | ELF64 relocatable object with AAPCS64 calls and Arm relocations |
+| NVIDIA PTX | `MTLC_ARCH_PTX` | PTX text module, one entry per declared kernel plus reachable device helpers |
+| SPIR-V (OpenCL 2.0) | `MTLC_ARCH_SPIRV` | binary module, one entry per declared kernel plus reachable device helpers |
 
 ## Use it from your frontend
 
@@ -195,6 +195,10 @@ examples/calc/  a second, non-Mettle frontend over the public API
 [libmtlc reference](docs/libmtlc/README.md) · [Write a frontend](docs/embedding.md) · [API](docs/libmtlc/api.md) · [IR model](docs/libmtlc/ir.md) · [Types](docs/libmtlc/types.md) · [Pipeline](docs/libmtlc/pipeline.md) · [Internals](docs/libmtlc/internals.md)
 
 [Language](docs/LANGUAGE.md) · [Compilation](docs/compilation.md) · [ML-opt](docs/ml-opt.md) · [GPU](docs/gpu.md) · [Borrow checker](docs/borrow-checker.md) · [C interop](docs/c-interop.md) · [Limitations](docs/known-limitations.md) · [Contributing](CONTRIBUTING.md)
+
+The [GPU architecture and acceptance contract](docs/gpu-architecture.md)
+records the DGX Spark/GB10 target, the AArch64 boundary, and the gaps that must
+close before Mettle can honestly claim GPU-framework parity.
 
 ## Status
 

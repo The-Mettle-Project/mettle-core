@@ -23,7 +23,7 @@ int binary_emitter_lookup_symbol_index(const BinaryEmitter *emitter,
                                        const char *name);
 
 /* Serializes the emitter's sections/symbols/relocations as a relocatable
- * ELF64 (x86-64) object. Defined in elf_emitter.c. */
+ * ELF64 (x86-64 or AArch64) object. Defined in elf_emitter.c. */
 int binary_emitter_write_elf_object_file(BinaryEmitter *emitter,
                                          const char *filename);
 
