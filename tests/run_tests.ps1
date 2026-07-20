@@ -2218,6 +2218,31 @@ catch {
   Write-CaseResult -Name "regalloc_argreg_call_pressure" -Passed $false -Reason $_.Exception.Message
 }
 
+# Wide-call boundary coverage: test_call_many_args.mettle only goes to 8 args,
+# below the point where arguments spill to the stack and (over MIR_MAX_PARAMS)
+# the enclosing function drops onto the baseline emitter. This runs a 20-param
+# callee and a 20-arg call: >register-set parameter homing and argument passing,
+# a correct wide-call return, and a float local intact across it. Returns 3. (It
+# is a sanity check, not the m-c99 #14 clobber repro -- that is frame-specific to
+# the C99 frontend and lives in the frontend's tests/diff/many_args.c.)
+$total++
+try {
+  $exePath = Join-Path $tmpDir "call_many_args_frame.exe"
+  $buildOut = & $CompilerPath --build "tests\test_call_many_args_frame.mettle" -o $exePath 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "wide-call frame build failed: $buildOut"
+  }
+  & $exePath 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 3) {
+    throw "wide-call frame exited with $LASTEXITCODE (expected 3): a wide call clobbered the caller's float local"
+  }
+  Write-CaseResult -Name "call_many_args_frame" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "call_many_args_frame" -Passed $false -Reason $_.Exception.Message
+}
+
 # Global float variables: compile with --build and verify they read back their
 # initializer (and survive mutation) instead of reading 0 from an uninitialized
 # XMM lane. Returns 25+125+35+30 = 215.

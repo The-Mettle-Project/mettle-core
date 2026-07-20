@@ -543,22 +543,33 @@ static int mir_dest_integer_narrow_width(CodeGenerator *g,
   if (is_signed_out) {
     *is_signed_out = 0;
   }
-  if (!g || !ctx || !ctx->function_name || !dest ||
-      dest->kind != IR_OPERAND_SYMBOL || !dest->name) {
+  if (!g || !ctx || !ctx->function_name || !dest || !dest->name ||
+      (dest->kind != IR_OPERAND_SYMBOL && dest->kind != IR_OPERAND_TEMP)) {
     return 0;
   }
-  IRFunction *irf =
-      code_generator_find_ir_function_binary(g, ctx->function_name);
-  if (!irf) {
-    return 0;
-  }
-  MtlcType *t = mir_local_or_param_type(g, irf, dest->name, NULL);
-  if (!t && g->ir_program) {
-    /* Not a local/param: a global scalar (its symbol never goes out of
-     * scope). The cached-global vreg carries the value across the function
-     * body, so it needs the same canonicalization as a local's vreg. */
-    const CgSym *s = code_generator_lookup_symbol(g, dest->name);
-    t = s ? s->type : NULL;
+  MtlcType *t = NULL;
+  if (dest->kind == IR_OPERAND_TEMP) {
+    /* A temporary has no local/param/global home; its defining instruction
+     * bakes the result type into value_type (builder API). Resolving it lets a
+     * narrow temp carry the same canonicalization as a narrow named home, so
+     * `(x << 28)` computed into a temp is sign-extended before a following
+     * arithmetic shift reads it -- the frontend no longer needs to force the
+     * operand into a local. */
+    t = code_generator_binary_get_operand_type_in_context(g, ctx, dest);
+  } else {
+    IRFunction *irf =
+        code_generator_find_ir_function_binary(g, ctx->function_name);
+    if (!irf) {
+      return 0;
+    }
+    t = mir_local_or_param_type(g, irf, dest->name, NULL);
+    if (!t && g->ir_program) {
+      /* Not a local/param: a global scalar (its symbol never goes out of
+       * scope). The cached-global vreg carries the value across the function
+       * body, so it needs the same canonicalization as a local's vreg. */
+      const CgSym *s = code_generator_lookup_symbol(g, dest->name);
+      t = s ? s->type : NULL;
+    }
   }
   if (!t || code_generator_type_is_aggregate(t) ||
       code_generator_binary_resolved_type_float_bits(t) != 0) {

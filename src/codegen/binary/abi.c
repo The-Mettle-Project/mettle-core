@@ -1090,8 +1090,9 @@ MtlcType *code_generator_binary_get_operand_type_in_context(
   MtlcType *type = code_generator_binary_get_operand_type(generator, operand);
   IRFunction *ir_function = NULL;
 
-  if (type || !generator || !operand || operand->kind != IR_OPERAND_SYMBOL ||
-      !operand->name) {
+  if (type || !generator || !operand || !operand->name ||
+      (operand->kind != IR_OPERAND_SYMBOL &&
+       operand->kind != IR_OPERAND_TEMP)) {
     return type;
   }
 
@@ -1103,40 +1104,47 @@ MtlcType *code_generator_binary_get_operand_type_in_context(
     return NULL;
   }
 
-  /* Parameters carry no IR_OP_DECLARE_LOCAL, and the param symbol is often out
-   * of scope in the symbol table by codegen time, so resolve them from the
-   * function signature. Without this a uint64/int32/etc. parameter used as a
-   * divide/shift/compare operand falls back to "signed", miscompiling unsigned
-   * arithmetic at -O0 (where copy-prop hasn't replaced the symbol with a typed
-   * temp). */
-  for (size_t i = 0; i < ir_function->parameter_count; i++) {
-    if (ir_function->parameter_names && ir_function->parameter_names[i] &&
-        strcmp(ir_function->parameter_names[i], operand->name) == 0) {
-      return code_generator_binary_get_resolved_type(
-          generator,
-          ir_function->parameter_types ? ir_function->parameter_types[i] : NULL,
-          0);
+  if (operand->kind == IR_OPERAND_SYMBOL) {
+    /* Parameters carry no IR_OP_DECLARE_LOCAL, and the param symbol is often out
+     * of scope in the symbol table by codegen time, so resolve them from the
+     * function signature. Without this a uint64/int32/etc. parameter used as a
+     * divide/shift/compare operand falls back to "signed", miscompiling unsigned
+     * arithmetic at -O0 (where copy-prop hasn't replaced the symbol with a typed
+     * temp). */
+    for (size_t i = 0; i < ir_function->parameter_count; i++) {
+      if (ir_function->parameter_names && ir_function->parameter_names[i] &&
+          strcmp(ir_function->parameter_names[i], operand->name) == 0) {
+        return code_generator_binary_get_resolved_type(
+            generator,
+            ir_function->parameter_types ? ir_function->parameter_types[i]
+                                         : NULL,
+            0);
+      }
+    }
+
+    for (size_t i = 0; i < ir_function->instruction_count; i++) {
+      const IRInstruction *instruction = &ir_function->instructions[i];
+      if (instruction->op == IR_OP_DECLARE_LOCAL && instruction->dest.name &&
+          strcmp(instruction->dest.name, operand->name) == 0 &&
+          instruction->text) {
+        return code_generator_binary_get_resolved_type(generator,
+                                                       instruction->text, 0);
+      }
     }
   }
 
-  for (size_t i = 0; i < ir_function->instruction_count; i++) {
-    const IRInstruction *instruction = &ir_function->instructions[i];
-    if (instruction->op == IR_OP_DECLARE_LOCAL && instruction->dest.name &&
-        strcmp(instruction->dest.name, operand->name) == 0 &&
-        instruction->text) {
-      return code_generator_binary_get_resolved_type(generator, instruction->text,
-                                                     0);
-    }
-  }
-
-  /* Builder-API temps carry no DECLARE_LOCAL; their defining instruction
-   * bakes the result type into value_type (mtlc_binary/mtlc_cast/mtlc_load).
-   * Without this an unsigned temp operand resolves NULL -> "signed" and
-   * miscompiles unsigned / % >> and compares in API-built modules. */
+  /* Builder-API temps (and symbols with no param/local home) carry no
+   * DECLARE_LOCAL; their defining instruction bakes the result type into
+   * value_type (mtlc_binary/mtlc_cast/mtlc_load). For a temp this is the only
+   * type source, so resolving it lets a narrow temp be canonicalized just like
+   * a narrow named home -- `(x << 28)` computed into a temp gets sign-extended
+   * before a following arithmetic shift reads it. Without this an unsigned or
+   * narrow temp operand resolves NULL -> "signed"/unwidened and miscompiles
+   * unsigned / % >> and compares in API-built modules. */
   for (size_t i = 0; i < ir_function->instruction_count; i++) {
     const IRInstruction *instruction = &ir_function->instructions[i];
     if (instruction->value_type &&
-        instruction->dest.kind == IR_OPERAND_SYMBOL &&
+        instruction->dest.kind == operand->kind &&
         instruction->dest.name &&
         strcmp(instruction->dest.name, operand->name) == 0) {
       return instruction->value_type;
