@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 #include <limits.h>
 
@@ -415,7 +416,7 @@ void ir_instruction_make_nop(IRInstruction *instruction) {
   ir_operand_destroy(&instruction->rhs);
   ir_instruction_clear_arguments(instruction);
   if (instruction->text) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
   }
   instruction->is_float = 0;
@@ -455,7 +456,7 @@ void ir_instruction_destroy_storage(IRInstruction *instruction) {
   ir_operand_destroy(&instruction->rhs);
   ir_instruction_clear_arguments(instruction);
   if (instruction->text) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
   }
   instruction->is_float = 0;
@@ -569,7 +570,7 @@ int ir_rewrite_to_assign_operand(IRInstruction *instruction,
   ir_operand_destroy(&instruction->rhs);
   ir_instruction_clear_arguments(instruction);
   if (instruction->text) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
   }
 
@@ -894,7 +895,7 @@ void ir_temp_value_map_remove_symbol_values(IRTempValueMap *map,
 
     if (remove) {
       ir_tvm_vsym_note_value(map, &entry->value, -1);
-      free(entry->name);
+      mettle_free_string(entry->name);
       ir_operand_destroy(&entry->value);
       continue;
     }
@@ -965,7 +966,7 @@ void ir_temp_value_map_invalidate_after_store(IRTempValueMap *map,
 
     if (remove) {
       ir_tvm_vsym_note_value(map, &entry->value, -1);
-      free(entry->name);
+      mettle_free_string(entry->name);
       ir_operand_destroy(&entry->value);
       continue;
     }
@@ -1253,7 +1254,7 @@ static void ir_expression_entry_destroy(IRExpressionEntry *entry) {
     return;
   }
 
-  free(entry->op_text);
+  mettle_free_string(entry->op_text);
   entry->op_text = NULL;
   ir_operand_destroy(&entry->lhs);
   ir_operand_destroy(&entry->rhs);

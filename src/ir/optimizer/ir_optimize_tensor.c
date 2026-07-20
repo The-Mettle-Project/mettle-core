@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 /* A chain is the exact sequential composition
  *
@@ -372,7 +373,7 @@ static int tensor_try_form_loop_residency(IRFunction *function,
   IRInstruction *branch = &function->instructions[branch_index];
   char *new_target = strdup(commit_label);
   if (!new_target) return -1;
-  free(branch->text);
+  mettle_free_string(branch->text);
   branch->text = new_target;
   first = &function->instructions[first_index];
   IRInstruction *update = &function->instructions[update_index];

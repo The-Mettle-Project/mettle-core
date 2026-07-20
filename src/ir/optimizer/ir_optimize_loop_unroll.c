@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 static int ir_try_parse_loop_increment(const IRFunction *function, size_t body_start,
                                        size_t body_end, const char *counter_symbol,
@@ -658,7 +659,7 @@ static int ir_vec_clone_body_inst(const IRInstruction *src, IRInstruction *out,
         return 0;
       }
       snprintf(nn, len, "%s__l%d", o->name, lane);
-      free(o->name);
+      mettle_free_string(o->name);
       o->name = nn;
     } else if (o->kind == IR_OPERAND_SYMBOL && o->name && acc &&
                strcmp(o->name, acc) == 0) {
@@ -666,7 +667,7 @@ static int ir_vec_clone_body_inst(const IRInstruction *src, IRInstruction *out,
       if (!nn) {
         return 0;
       }
-      free(o->name);
+      mettle_free_string(o->name);
       o->name = nn;
     }
   }
@@ -1011,7 +1012,7 @@ static int ir_vec_try_unroll_reduction_at(IRFunction *function, size_t h,
               strcmp(sl[s]->name, iv) == 0) {
             char *nn = mettle_strdup(tiL);
             if (!nn) { ir_instruction_destroy_storage(&tmp); goto oom; }
-            free(sl[s]->name); sl[s]->name = nn;
+            mettle_free_string(sl[s]->name); sl[s]->name = nn;
             sl[s]->kind = IR_OPERAND_TEMP;
           }
         }
@@ -1056,12 +1057,12 @@ static int ir_vec_try_unroll_reduction_at(IRFunction *function, size_t h,
       /* rename the loop's own header label + back-jump target h->sh */
       if (tmp.op == IR_OP_LABEL && tmp.text &&
           strcmp(tmp.text, head_label) == 0) {
-        free(tmp.text); tmp.text = mettle_strdup(sh);
+        mettle_free_string(tmp.text); tmp.text = mettle_strdup(sh);
         if(!tmp.text){ir_instruction_destroy_storage(&tmp);goto oom;}
       }
       if (tmp.op == IR_OP_JUMP && tmp.text &&
           strcmp(tmp.text, head_label) == 0) {
-        free(tmp.text); tmp.text = mettle_strdup(sh);
+        mettle_free_string(tmp.text); tmp.text = mettle_strdup(sh);
         if(!tmp.text){ir_instruction_destroy_storage(&tmp);goto oom;}
       }
       /* The remainder loop's exit must run the accumulator-combine before
@@ -1069,7 +1070,7 @@ static int ir_vec_try_unroll_reduction_at(IRFunction *function, size_t h,
        * (branch_zero %g -> exit_label) to HCOMB. */
       if (tmp.op == IR_OP_BRANCH_ZERO && tmp.text &&
           strcmp(tmp.text, exit_label) == 0) {
-        free(tmp.text); tmp.text = mettle_strdup(hcomb);
+        mettle_free_string(tmp.text); tmp.text = mettle_strdup(hcomb);
         if(!tmp.text){ir_instruction_destroy_storage(&tmp);goto oom;}
       }
       VEC_EMIT({ out[out_n] = tmp; });

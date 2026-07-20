@@ -22,10 +22,61 @@ static void register_named_type(IRProgram *program, TypeChecker *tc,
   }
 }
 
+/* Set of type-name strings already probed against the frontend, so each
+ * distinct spelling is resolved once. Probing used to run for EVERY
+ * instruction's text (labels, temps, call targets included), which put
+ * millions of type_checker_get_type_by_name calls on the compile path of
+ * large modules. */
+typedef struct {
+  const char **names; /* NULL = empty slot */
+  size_t slot_count;  /* power of two; 0 = allocation failed, probe anyway */
+  size_t count;
+} ProbedNameSet;
+
+/* Returns 1 when `name` was already present, 0 when newly added (or when the
+ * set is unavailable, so the caller still probes). */
+static int probed_set_check_and_add(ProbedNameSet *set, const char *name) {
+  if (set->slot_count && set->count * 2 >= set->slot_count) {
+    size_t next = set->slot_count * 2;
+    const char **grown = (const char **)calloc(next, sizeof(*grown));
+    if (grown) {
+      for (size_t i = 0; i < set->slot_count; i++) {
+        if (!set->names[i]) {
+          continue;
+        }
+        size_t h = mettle_fnv1a_hash(set->names[i]) & (next - 1);
+        while (grown[h]) {
+          h = (h + 1) & (next - 1);
+        }
+        grown[h] = set->names[i];
+      }
+      free((void *)set->names);
+      set->names = grown;
+      set->slot_count = next;
+    }
+  }
+  if (!set->names) {
+    return 0;
+  }
+  size_t mask = set->slot_count - 1;
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (set->names[h]) {
+    if (strcmp(set->names[h], name) == 0) {
+      return 1;
+    }
+    h = (h + 1) & mask;
+  }
+  set->names[h] = name;
+  set->count++;
+  return 0;
+}
+
 /* Register every type name the code generators may resolve: the primitives (for
  * get_resolved_type's defaults) plus every type name that appears in the IR as a
- * function parameter type or an instruction's text (IR_OP_CAST /
- * IR_OP_DECLARE_LOCAL carry a type name there). */
+ * function parameter type, return type, or a type-carrying instruction's text
+ * (IR_OP_CAST target, IR_OP_DECLARE_LOCAL local type, IR_OP_NEW allocation
+ * type). Other opcodes put labels, operators, and call targets in text - never
+ * type names - so they are not probed. */
 static void populate_type_registry(IRProgram *program, TypeChecker *tc) {
   static const char *const builtins[] = {
       "bool",   "int8",    "int16",   "int32",   "int64",
@@ -35,21 +86,37 @@ static void populate_type_registry(IRProgram *program, TypeChecker *tc) {
     register_named_type(program, tc, builtins[i]);
   }
 
+  ProbedNameSet probed = {0};
+  probed.names = (const char **)calloc(256, sizeof(*probed.names));
+  probed.slot_count = probed.names ? 256 : 0;
+
   for (size_t f = 0; f < program->function_count; f++) {
     IRFunction *fn = program->functions[f];
     if (!fn) {
       continue;
     }
     for (size_t p = 0; p < fn->parameter_count; p++) {
-      if (fn->parameter_types) {
+      if (fn->parameter_types && fn->parameter_types[p] &&
+          !probed_set_check_and_add(&probed, fn->parameter_types[p])) {
         register_named_type(program, tc, fn->parameter_types[p]);
       }
     }
-    register_named_type(program, tc, fn->return_type_name);
+    if (fn->return_type_name &&
+        !probed_set_check_and_add(&probed, fn->return_type_name)) {
+      register_named_type(program, tc, fn->return_type_name);
+    }
     for (size_t i = 0; i < fn->instruction_count; i++) {
-      register_named_type(program, tc, fn->instructions[i].text);
+      const IRInstruction *in = &fn->instructions[i];
+      if (in->op != IR_OP_CAST && in->op != IR_OP_DECLARE_LOCAL &&
+          in->op != IR_OP_NEW) {
+        continue;
+      }
+      if (in->text && !probed_set_check_and_add(&probed, in->text)) {
+        register_named_type(program, tc, in->text);
+      }
     }
   }
+  free((void *)probed.names);
 }
 
 /* ------------------------------------------------------------------ */

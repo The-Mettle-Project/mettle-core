@@ -953,7 +953,7 @@ static int ir_simd_widen_accumulator(IRFunction *clone, size_t begin,
         IRInstruction *cast = &clone->instructions[j];
         if (cast->op == IR_OP_CAST && cast->dest.kind == IR_OPERAND_TEMP &&
             cast->dest.name && strcmp(cast->dest.name, ins->rhs.name) == 0) {
-          free(cast->text);
+          mettle_free_string(cast->text);
           cast->text = mettle_strdup("int64");
           rewrote_cast = cast->text != NULL;
           break;
@@ -969,7 +969,7 @@ static int ir_simd_widen_accumulator(IRFunction *clone, size_t begin,
     if (decl->op == IR_OP_DECLARE_LOCAL &&
         decl->dest.kind == IR_OPERAND_SYMBOL && decl->dest.name &&
         strcmp(decl->dest.name, acc_symbol) == 0) {
-      free(decl->text);
+      mettle_free_string(decl->text);
       decl->text = mettle_strdup("int64");
       rewrote_decl = decl->text != NULL;
       break;
@@ -1418,7 +1418,7 @@ static void ir_clear_simd_markers(IRFunction *function) {
   for (size_t i = 0; i < function->instruction_count; i++) {
     IRInstruction *instruction = &function->instructions[i];
     if (ir_instruction_is_simd_marker(instruction)) {
-      free(instruction->text);
+      mettle_free_string(instruction->text);
       instruction->text = NULL; /* op stays IR_OP_NOP -- inert everywhere */
     }
   }

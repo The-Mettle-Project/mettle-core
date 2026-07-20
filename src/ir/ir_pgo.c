@@ -47,7 +47,7 @@ long long ir_pgo_hot_threshold(void) {
 
 void ir_pgo_reset(void) {
   for (size_t i = 0; i < g_entry_count; i++) {
-    free(g_entries[i].name);
+    mettle_free_string(g_entries[i].name);
   }
   for (size_t i = 0; i < g_site_count; i++) {
     free(g_sites[i].function_name);

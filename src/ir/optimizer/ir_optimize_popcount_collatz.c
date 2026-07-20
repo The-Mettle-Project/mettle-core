@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 #define IR_POPCOUNT_BYTE_UNROLL 8
 
@@ -1113,7 +1114,7 @@ static int ir_try_fold_collatz_odd_step_at(IRFunction *function,
     return 0;
   }
 
-  free(odd_fold_shift.text);
+  mettle_free_string(odd_fold_shift.text);
   odd_fold_shift.text = mettle_strdup(">>");
   ir_operand_destroy(&odd_fold_shift.rhs);
   odd_fold_shift.rhs = ir_operand_int(1);

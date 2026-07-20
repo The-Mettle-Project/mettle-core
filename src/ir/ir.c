@@ -6,6 +6,17 @@
 
 #define IR_OPERAND_FMT_BUFSIZE 128
 
+/* Single seam for allocating an IR operand name / instruction text copy, and
+ * the pair of mettle_free_string on every destroy path (which also tolerates
+ * interned/static strings). Interning these names was tried and measured
+ * SLOWER on 500k-LOC fixtures: temp/label names are unique, so the pool paid
+ * a hash, an entry allocation, and periodic whole-table rehashes per name
+ * while clones almost never hit. Plain owned copies win; keep the seam so a
+ * future allocator change is one line. */
+static char *ir_intern_name(const char *name) {
+  return mettle_strdup(name);
+}
+
 typedef struct {
   const char *name;
   MtlcIntrinsic intrinsic;
@@ -623,14 +634,14 @@ IROperand ir_operand_none(void) {
 IROperand ir_operand_temp(const char *name) {
   IROperand operand = ir_operand_none();
   operand.kind = IR_OPERAND_TEMP;
-  operand.name = mettle_strdup(name);
+  operand.name = ir_intern_name(name);
   return operand;
 }
 
 IROperand ir_operand_symbol(const char *name) {
   IROperand operand = ir_operand_none();
   operand.kind = IR_OPERAND_SYMBOL;
-  operand.name = mettle_strdup(name);
+  operand.name = ir_intern_name(name);
   return operand;
 }
 
@@ -658,14 +669,14 @@ IROperand ir_operand_float_sized(double value, int float_bits) {
 IROperand ir_operand_string(const char *value) {
   IROperand operand = ir_operand_none();
   operand.kind = IR_OPERAND_STRING;
-  operand.name = mettle_strdup(value);
+  operand.name = ir_intern_name(value);
   return operand;
 }
 
 IROperand ir_operand_label(const char *name) {
   IROperand operand = ir_operand_none();
   operand.kind = IR_OPERAND_LABEL;
-  operand.name = mettle_strdup(name);
+  operand.name = ir_intern_name(name);
   return operand;
 }
 
@@ -709,9 +720,7 @@ void ir_operand_destroy(IROperand *operand) {
   case IR_OPERAND_SYMBOL:
   case IR_OPERAND_STRING:
   case IR_OPERAND_LABEL:
-    if (operand->name) {
-      free(operand->name);
-    }
+    mettle_free_string(operand->name);
     break;
   default:
     break;
@@ -732,7 +741,7 @@ static void ir_instruction_destroy(IRInstruction *instruction) {
   ir_operand_destroy(&instruction->dest);
   ir_operand_destroy(&instruction->lhs);
   ir_operand_destroy(&instruction->rhs);
-  free(instruction->text);
+  mettle_free_string(instruction->text);
 
   if (instruction->arguments) {
     for (size_t i = 0; i < instruction->argument_count; i++) {
@@ -917,7 +926,7 @@ int ir_function_append_instruction(IRFunction *function,
   slot->dest = ir_operand_clone(&instruction->dest);
   slot->lhs = ir_operand_clone(&instruction->lhs);
   slot->rhs = ir_operand_clone(&instruction->rhs);
-  slot->text = mettle_strdup(instruction->text);
+  slot->text = ir_intern_name(instruction->text);
   slot->is_float = instruction->is_float;
   slot->arguments = NULL;
   slot->argument_types = NULL;
@@ -1007,7 +1016,7 @@ int ir_function_insert_instruction(IRFunction *function, size_t index,
   slot->dest = ir_operand_clone(&instruction->dest);
   slot->lhs = ir_operand_clone(&instruction->lhs);
   slot->rhs = ir_operand_clone(&instruction->rhs);
-  slot->text = mettle_strdup(instruction->text);
+  slot->text = ir_intern_name(instruction->text);
   slot->argument_count = instruction->argument_count;
   slot->arguments = NULL;
   slot->argument_types = NULL;
@@ -1319,6 +1328,7 @@ IRProgram *ir_program_create(void) {
 }
 
 static void ir_symbol_index_invalidate(const IRProgram *program);
+static void ir_type_index_invalidate(const IRProgram *program);
 
 void ir_program_destroy(IRProgram *program) {
   if (!program) {
@@ -1328,6 +1338,7 @@ void ir_program_destroy(IRProgram *program) {
    * name->index table (the incremental update path trusts entries [0, cached)
    * to be unchanged, which only holds within one program's lifetime). */
   ir_symbol_index_invalidate(program);
+  ir_type_index_invalidate(program);
 
   if (program->functions) {
     for (size_t i = 0; i < program->function_count; i++) {
@@ -1378,16 +1389,104 @@ void ir_program_destroy(IRProgram *program) {
   free(program);
 }
 
+/* Name -> type-registry index. Same shape and lifecycle as IRSymbolIndex
+ * below: the registry is append-only (update-in-place never changes a name),
+ * so the cache tops up incrementally and only rebuilds on load-factor
+ * overflow. ir_program_lookup_type runs per codegen instruction
+ * (mir_addressof_kind and friends), so the old linear scan was a measurable
+ * constant on 500k-LOC modules. */
+typedef struct {
+  size_t *slots; /* index+1 into type_registry; 0 = empty */
+  size_t slot_count; /* power of two */
+  const IRProgram *program;
+  size_t entry_count;
+} IRTypeIndex;
+
+static IRTypeIndex g_ir_type_index = {0};
+
+static void ir_type_index_reset(void) {
+  free(g_ir_type_index.slots);
+  g_ir_type_index.slots = NULL;
+  g_ir_type_index.slot_count = 0;
+  g_ir_type_index.program = NULL;
+  g_ir_type_index.entry_count = 0;
+}
+
+static void ir_type_index_invalidate(const IRProgram *program) {
+  if (g_ir_type_index.program == program) {
+    ir_type_index_reset();
+  }
+}
+
+static void ir_type_index_insert(const IRProgram *program, size_t i) {
+  size_t mask = g_ir_type_index.slot_count - 1;
+  const char *name = program->type_registry[i].name;
+  if (!name) {
+    return;
+  }
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (g_ir_type_index.slots[h]) {
+    if (strcmp(program->type_registry[g_ir_type_index.slots[h] - 1].name,
+               name) == 0) {
+      return; /* names are unique; keep the first entry */
+    }
+    h = (h + 1) & mask;
+  }
+  g_ir_type_index.slots[h] = i + 1;
+}
+
+/* Returns the registry index of `name`, or (size_t)-1 when absent. Falls back
+ * to the linear scan if the table cannot be allocated. */
+static size_t ir_type_index_find(const IRProgram *program, const char *name) {
+  if (!(g_ir_type_index.program == program && g_ir_type_index.slots &&
+        g_ir_type_index.entry_count <= program->type_registry_count &&
+        program->type_registry_count * 2 <= g_ir_type_index.slot_count)) {
+    ir_type_index_reset();
+    size_t slot_count = 64;
+    while (slot_count < program->type_registry_count * 4) {
+      slot_count *= 2;
+    }
+    size_t *slots = calloc(slot_count, sizeof(*slots));
+    if (!slots) {
+      for (size_t i = 0; i < program->type_registry_count; i++) {
+        if (strcmp(program->type_registry[i].name, name) == 0) {
+          return i;
+        }
+      }
+      return (size_t)-1;
+    }
+    g_ir_type_index.slots = slots;
+    g_ir_type_index.slot_count = slot_count;
+    g_ir_type_index.program = program;
+    g_ir_type_index.entry_count = 0;
+  }
+  for (size_t i = g_ir_type_index.entry_count;
+       i < program->type_registry_count; i++) {
+    ir_type_index_insert(program, i);
+  }
+  g_ir_type_index.entry_count = program->type_registry_count;
+
+  size_t mask = g_ir_type_index.slot_count - 1;
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (g_ir_type_index.slots[h]) {
+    size_t idx = g_ir_type_index.slots[h] - 1;
+    if (strcmp(program->type_registry[idx].name, name) == 0) {
+      return idx;
+    }
+    h = (h + 1) & mask;
+  }
+  return (size_t)-1;
+}
+
 int ir_program_register_type(IRProgram *program, const char *name,
                              MtlcType *type) {
   if (!program || !name) {
     return 0;
   }
-  for (size_t i = 0; i < program->type_registry_count; i++) {
-    if (strcmp(program->type_registry[i].name, name) == 0) {
-      program->type_registry[i].type = type; /* update in place */
-      return 1;
-    }
+  size_t existing = ir_type_index_find(program, name);
+  if (existing != (size_t)-1) {
+    program->type_registry[existing].type = type; /* update in place */
+    return 1;
   }
   if (program->type_registry_count == program->type_registry_capacity) {
     size_t next = program->type_registry_capacity
@@ -1415,12 +1514,8 @@ MtlcType *ir_program_lookup_type(const IRProgram *program, const char *name) {
   if (!program || !name) {
     return NULL;
   }
-  for (size_t i = 0; i < program->type_registry_count; i++) {
-    if (strcmp(program->type_registry[i].name, name) == 0) {
-      return program->type_registry[i].type;
-    }
-  }
-  return NULL;
+  size_t idx = ir_type_index_find(program, name);
+  return idx != (size_t)-1 ? program->type_registry[idx].type : NULL;
 }
 
 IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
@@ -2370,7 +2465,7 @@ static int ir_retarget_call(IRInstruction *insn, const char *name) {
   if (!copy) {
     return 0;
   }
-  free(insn->text);
+  mettle_free_string(insn->text);
   insn->text = copy;
   return 1;
 }
@@ -2427,7 +2522,7 @@ int ir_program_route_to_native_heap(IRProgram *program) {
           return 0;
         }
         args[0] = size_arg;
-        free(insn->text);
+        mettle_free_string(insn->text);
         insn->text = callee;
         insn->arguments = args;
         insn->argument_count = 1;

@@ -60,7 +60,7 @@ static int ir_dbg_build_call(IRInstruction *instruction, const char *callee,
   if (argument_count > 0) {
     instruction->arguments = calloc(argument_count, sizeof(IROperand));
     if (!instruction->arguments) {
-      free(instruction->text);
+      mettle_free_string(instruction->text);
       instruction->text = NULL;
       return 0;
     }
@@ -81,7 +81,7 @@ static void ir_dbg_destroy_instruction(IRInstruction *instruction) {
   instruction->argument_count = 0;
   ir_operand_destroy(&instruction->dest);
   ir_operand_destroy(&instruction->lhs);
-  free(instruction->text);
+  mettle_free_string(instruction->text);
   instruction->text = NULL;
 }
 
@@ -110,7 +110,7 @@ static size_t ir_dbg_local_registry_add(IRProgram *program, const char *name,
   entry->name = mettle_strdup(name);
   entry->type_name = mettle_strdup(type_name ? type_name : "?");
   if (!entry->name || !entry->type_name) {
-    free(entry->name);
+    mettle_free_string(entry->name);
     free(entry->type_name);
     return (size_t)-1;
   }

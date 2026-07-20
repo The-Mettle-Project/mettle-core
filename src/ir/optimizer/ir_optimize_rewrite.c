@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 /* ============================================================================
  * Declarative algebraic rewrite engine.
@@ -178,7 +179,7 @@ static int rw_to_shl(IRInstruction *instruction, const IROperand *base,
   ir_operand_destroy(&instruction->lhs);
   ir_operand_destroy(&instruction->rhs);
   ir_instruction_clear_arguments(instruction);
-  free(instruction->text);
+  mettle_free_string(instruction->text);
   instruction->op = IR_OP_BINARY;
   instruction->lhs = cloned;
   instruction->rhs = ir_operand_int(shift);
@@ -334,7 +335,7 @@ static int rw_set_binary(IRInstruction *instruction, const IROperand *x,
   ir_operand_destroy(&instruction->lhs);
   ir_operand_destroy(&instruction->rhs);
   ir_instruction_clear_arguments(instruction);
-  free(instruction->text);
+  mettle_free_string(instruction->text);
   instruction->op = IR_OP_BINARY;
   instruction->lhs = base;
   instruction->rhs = ir_operand_int(k);

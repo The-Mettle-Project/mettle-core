@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 static int ir_symbol_zero_initialized_before(const IRFunction *function,
                                              size_t before_index,
@@ -510,7 +511,7 @@ int ir_positive_loop_div2_to_shift_pass(IRFunction *function,
         if (!op) {
           return 0;
         }
-        free(instruction->text);
+        mettle_free_string(instruction->text);
         instruction->text = op;
         ir_operand_destroy(&instruction->rhs);
         instruction->rhs = ir_operand_int(1);

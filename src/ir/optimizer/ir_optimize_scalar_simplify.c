@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 static int ir_builtin_integer_type_info(const char *name, int *size_out,
                                         int *is_unsigned_out) {
@@ -117,7 +118,7 @@ static int ir_try_compose_single_use_cast(IRFunction *function,
 
   ir_operand_destroy(&cast->lhs);
   cast->lhs = source;
-  free(cast->text);
+  mettle_free_string(cast->text);
   cast->text = type_copy;
   ir_instruction_make_nop(producer);
 
@@ -311,7 +312,7 @@ static void ir_symbol_value_map_invalidate_name(IRSymbolValueMap *map,
 
     if (remove) {
       ir_temp_value_map_note_value_removed(map, &entry->value);
-      free(entry->name);
+      mettle_free_string(entry->name);
       ir_operand_destroy(&entry->value);
       continue;
     }
@@ -554,7 +555,7 @@ static void ir_cp_prune_dead_entries(IRTempValueMap *map,
         entry->name ? ir_temp_value_map_lookup(last_use, entry->name) : NULL;
     if (!lu || lu->int_value <= (long long)i) {
       ir_temp_value_map_note_value_removed(map, &entry->value);
-      free(entry->name);
+      mettle_free_string(entry->name);
       ir_operand_destroy(&entry->value);
       continue;
     }
@@ -1137,7 +1138,7 @@ static int ir_try_rewrite_mod_pow2_compare_zero(IRFunction *function,
 
   long long mask = ((long long)1 << shift) - 1;
   producer->rhs.int_value = mask;
-  free(producer->text);
+  mettle_free_string(producer->text);
   producer->text = mettle_strdup("&");
   if (!producer->text) {
     return 0;
@@ -1328,7 +1329,7 @@ static int ir_rewrite_branch_eq_shortcut(IRInstruction *producer,
 
   ir_operand_destroy(&branch_zero->lhs);
   ir_operand_destroy(&branch_zero->rhs);
-  free(branch_zero->text);
+  mettle_free_string(branch_zero->text);
   ir_instruction_clear_arguments(branch_zero);
   branch_zero->op = IR_OP_BRANCH_EQ;
   branch_zero->lhs = lhs;
@@ -1639,7 +1640,7 @@ int ir_thread_jump_targets_pass(IRFunction *function, int *changed) {
       if (!target_copy) {
         return 0;
       }
-      free(instruction->text);
+      mettle_free_string(instruction->text);
       instruction->text = target_copy;
       if (changed) {
         *changed = 1;
@@ -2015,7 +2016,7 @@ static int ir_try_fuse_rotate_add_at(IRFunction *function, size_t index,
     ir_operand_destroy(&fused.dest);
     ir_operand_destroy(&fused.lhs);
     ir_operand_destroy(&fused.rhs);
-    free(fused.text);
+    mettle_free_string(fused.text);
     return 0;
   }
 

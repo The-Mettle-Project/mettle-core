@@ -1,4 +1,5 @@
 #include "ir_optimize_internal.h"
+#include "../../common.h" // mettle_free_string
 
 /* ---- Software prefetching for indirect memory accesses ----------------------
  *
@@ -202,7 +203,7 @@ static const char *ir_prefetch_emit_clone(IRInstructionVector *vec,
     if (op->kind == IR_OPERAND_TEMP && op->name) {
       const char *mapped = ir_name_map_lookup(names, op->name);
       if (mapped) {
-        free(op->name);
+        mettle_free_string(op->name);
         op->name = mettle_strdup(mapped);
         if (!op->name) {
           ir_instruction_destroy_storage(&cloned);
@@ -212,7 +213,7 @@ static const char *ir_prefetch_emit_clone(IRInstructionVector *vec,
     } else if (op->kind == IR_OPERAND_SYMBOL && op->name &&
                strcmp(op->name, iv_symbol) == 0) {
       /* iv -> the look-ahead index temp */
-      free(op->name);
+      mettle_free_string(op->name);
       op->kind = IR_OPERAND_TEMP;
       op->name = mettle_strdup(lookahead_temp);
       if (!op->name) {

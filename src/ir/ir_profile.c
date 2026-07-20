@@ -126,7 +126,7 @@ int ir_profile_build_enter_instruction(IRInstruction *instruction,
   instruction->argument_count = 1;
   instruction->arguments = malloc(sizeof(IROperand));
   if (!instruction->arguments) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
     return 0;
   }
@@ -160,7 +160,7 @@ static int ir_profile_build_op_instruction(IRInstruction *instruction,
   instruction->argument_count = 2;
   instruction->arguments = malloc(2 * sizeof(IROperand));
   if (!instruction->arguments) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
     return 0;
   }
@@ -179,7 +179,7 @@ static void ir_profile_destroy_op_instruction(IRInstruction *instruction) {
   free(instruction->arguments);
   instruction->arguments = NULL;
   instruction->argument_count = 0;
-  free(instruction->text);
+  mettle_free_string(instruction->text);
   instruction->text = NULL;
 }
 
@@ -192,7 +192,7 @@ static void ir_profile_destroy_enter(IRInstruction *instruction) {
     free(instruction->arguments);
     instruction->arguments = NULL;
   }
-  free(instruction->text);
+  mettle_free_string(instruction->text);
   instruction->text = NULL;
   instruction->argument_count = 0;
 }
@@ -234,10 +234,10 @@ static int ir_profile_instrument_function(IRProgram *program,
     exit = ir_profile_make_exit(location);
     if (!exit.text ||
         !ir_function_insert_instruction(function, index, &exit)) {
-      free(exit.text);
+      mettle_free_string(exit.text);
       return 0;
     }
-    free(exit.text);
+    mettle_free_string(exit.text);
     exit.text = NULL;
   }
 
@@ -431,7 +431,7 @@ static int ir_profile_build_block_instruction(IRInstruction *instruction,
   instruction->argument_count = 1;
   instruction->arguments = malloc(sizeof(IROperand));
   if (!instruction->arguments) {
-    free(instruction->text);
+    mettle_free_string(instruction->text);
     instruction->text = NULL;
     return 0;
   }

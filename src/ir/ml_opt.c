@@ -3,6 +3,7 @@
  * applied disposition through the reference-interpreter differential
  * (ir_verify_check_rewrite). The model proposes; the validator disposes. */
 #include "ml_opt.h"
+#include "../common.h" // mettle_free_string
 #include "ir_verify.h"
 
 #include <stdio.h>
@@ -199,7 +200,7 @@ static int apply_rewrite(IRFunction *fn, size_t gidx, char *postfix) {
     } else { ok = 0; }
   }
   if (!ok || nops == 0 || sp != 1) {
-    for (int i = 0; i < nops; i++) { ir_operand_destroy(&ops[i].dest); ir_operand_destroy(&ops[i].lhs); ir_operand_destroy(&ops[i].rhs); free(ops[i].text); }
+    for (int i = 0; i < nops; i++) { ir_operand_destroy(&ops[i].dest); ir_operand_destroy(&ops[i].lhs); ir_operand_destroy(&ops[i].rhs); mettle_free_string(ops[i].text); }
     for (int i = 0; i < sp; i++) ir_operand_destroy(&stack[i]);
     ir_operand_destroy(&root_dest);
     return 0;
@@ -213,7 +214,7 @@ static int apply_rewrite(IRFunction *fn, size_t gidx, char *postfix) {
     if (!ir_function_insert_instruction(fn, gidx + (size_t)i, &ops[i])) good = 0;
   if (good && gidx + (size_t)nops < fn->instruction_count)
     fn->instructions[gidx + (size_t)nops].op = IR_OP_NOP;
-  for (int i = 0; i < nops; i++) { ir_operand_destroy(&ops[i].dest); ir_operand_destroy(&ops[i].lhs); ir_operand_destroy(&ops[i].rhs); free(ops[i].text); }
+  for (int i = 0; i < nops; i++) { ir_operand_destroy(&ops[i].dest); ir_operand_destroy(&ops[i].lhs); ir_operand_destroy(&ops[i].rhs); mettle_free_string(ops[i].text); }
   ir_function_rebuild_cfg(fn);
   return good;
 }
