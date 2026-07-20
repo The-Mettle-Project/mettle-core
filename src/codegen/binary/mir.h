@@ -351,7 +351,15 @@ typedef struct {
  * ABI registers; the rest are homed from the caller's stack frame. 16 covers
  * essentially all real signatures while keeping the fixed per-function param
  * arrays small. */
-#define MIR_MAX_PARAMS 16
+/* A call with more arguments than this drops the whole enclosing function off
+ * the MIR backend and onto the baseline emitter, which reserves no outgoing
+ * argument area in its prologue and overwrites the caller's own locals. That
+ * made a 17-argument call silently corrupt a caller's double.
+ *
+ * Everything keyed off this constant is a fixed-size array that scales with
+ * it, so raising it is cheap; the ceiling exists to bound those arrays, not
+ * because the lowering has a 16-argument assumption. */
+#define MIR_MAX_PARAMS 32
 
 typedef struct {
   MirVreg *vregs;
