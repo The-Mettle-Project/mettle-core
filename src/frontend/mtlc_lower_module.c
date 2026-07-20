@@ -3,6 +3,7 @@
  * type/symbol tables. FRONTEND-side adapter (driver, not libmtlc). */
 #include "frontend/mtlc_lower_module.h"
 #include "frontend/mtlc_frontend.h" // mtlc_type_from_frontend
+#include "common.h"                 // mettle_fnv1a_hash
 
 #include <stdlib.h>
 #include <string.h>
@@ -310,8 +311,61 @@ static MtlcType **build_param_types(const Symbol *s, size_t *count) {
   return arr;
 }
 
+/* Open-addressing set of the program's lowered function names, built once per
+ * populate_module_symbols call. The previous per-declaration linear scan over
+ * program->functions made module population quadratic in function count
+ * (13k-function fixtures spent seconds in strcmp here). */
+typedef struct {
+  const char **names; /* NULL = empty slot */
+  size_t slot_count;  /* power of two, 0 when allocation failed */
+} FnBodySet;
+
+static void fn_body_set_build(FnBodySet *set, const IRProgram *program) {
+  set->names = NULL;
+  set->slot_count = 0;
+  size_t slot_count = 16;
+  while (slot_count < program->function_count * 2) {
+    slot_count *= 2;
+  }
+  const char **names = (const char **)calloc(slot_count, sizeof(*names));
+  if (!names) {
+    return; /* lookups fall back to the linear scan */
+  }
+  for (size_t i = 0; i < program->function_count; i++) {
+    if (!program->functions[i] || !program->functions[i]->name) {
+      continue;
+    }
+    const char *name = program->functions[i]->name;
+    size_t mask = slot_count - 1;
+    size_t h = mettle_fnv1a_hash(name) & mask;
+    while (names[h] && strcmp(names[h], name) != 0) {
+      h = (h + 1) & mask;
+    }
+    names[h] = name;
+  }
+  set->names = names;
+  set->slot_count = slot_count;
+}
+
+static void fn_body_set_free(FnBodySet *set) {
+  free((void *)set->names);
+  set->names = NULL;
+  set->slot_count = 0;
+}
+
 static int program_has_function_body(const IRProgram *program,
-                                     const char *name) {
+                                     const FnBodySet *set, const char *name) {
+  if (set->names) {
+    size_t mask = set->slot_count - 1;
+    size_t h = mettle_fnv1a_hash(name) & mask;
+    while (set->names[h]) {
+      if (strcmp(set->names[h], name) == 0) {
+        return 1;
+      }
+      h = (h + 1) & mask;
+    }
+    return 0;
+  }
   for (size_t i = 0; i < program->function_count; i++) {
     if (program->functions[i] && program->functions[i]->name &&
         strcmp(program->functions[i]->name, name) == 0) {
@@ -327,6 +381,8 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
   if (!pdata) {
     return;
   }
+  FnBodySet body_set;
+  fn_body_set_build(&body_set, program);
   for (size_t i = 0; i < pdata->declaration_count; i++) {
     ASTNode *decl = pdata->declarations[i];
     if (!decl) {
@@ -344,7 +400,8 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
       entry.is_extern = fd->is_extern;
       entry.is_kernel = fd->is_kernel;
       entry.has_body =
-          fd->body != NULL && program_has_function_body(program, fd->name);
+          fd->body != NULL &&
+          program_has_function_body(program, &body_set, fd->name);
       entry.link_name = s ? s->link_name : NULL;
       entry.type = s ? mtlc_type_from_frontend(s->type) : NULL;
       if (s && s->kind == SYMBOL_FUNCTION) {
@@ -425,6 +482,7 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
       }
     }
   }
+  fn_body_set_free(&body_set);
 }
 
 /* main() takes (argc, argv) when its lowered signature has two parameters. */

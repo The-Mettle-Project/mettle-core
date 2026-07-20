@@ -1318,10 +1318,16 @@ IRProgram *ir_program_create(void) {
   return program;
 }
 
+static void ir_symbol_index_invalidate(const IRProgram *program);
+
 void ir_program_destroy(IRProgram *program) {
   if (!program) {
     return;
   }
+  /* A later program allocated at this address must not inherit the cached
+   * name->index table (the incremental update path trusts entries [0, cached)
+   * to be unchanged, which only holds within one program's lifetime). */
+  ir_symbol_index_invalidate(program);
 
   if (program->functions) {
     for (size_t i = 0; i < program->function_count; i++) {
@@ -1487,20 +1493,60 @@ static void ir_symbol_index_reset(void) {
   g_ir_symbol_index.symbol_count = 0;
 }
 
+static void ir_symbol_index_invalidate(const IRProgram *program) {
+  if (g_ir_symbol_index.program == program) {
+    ir_symbol_index_reset();
+  }
+}
+
+/* Insert module_symbols[i] into the table. "First entry with a given name
+ * wins", matching the original linear scan's duplicate semantics. */
+static void ir_symbol_index_insert(const IRProgram *program, size_t i) {
+  size_t mask = g_ir_symbol_index.slot_count - 1;
+  const char *name = program->module_symbols[i].name;
+  if (!name) {
+    return;
+  }
+  size_t h = mettle_fnv1a_hash(name) & mask;
+  while (g_ir_symbol_index.slots[h]) {
+    if (strcmp(program->module_symbols[g_ir_symbol_index.slots[h] - 1].name,
+               name) == 0) {
+      return; /* earlier symbol with this name wins */
+    }
+    h = (h + 1) & mask;
+  }
+  g_ir_symbol_index.slots[h] = i + 1;
+}
+
 /* Returns 1 with the table ready, 0 on allocation failure (callers fall back
- * to the linear scan rather than miss real symbols). */
+ * to the linear scan rather than miss real symbols).
+ *
+ * The module symbol array is append-only for a program's lifetime, so when the
+ * cached table belongs to this program and only trails by newly appended
+ * entries, we top it up instead of rebuilding. Rebuilding from scratch on
+ * every count change made interleaved add/lookup sequences (each global
+ * initializer resolves the globals before it) quadratic: 200k globals sat in
+ * IR lowering for over five minutes. The base address is NOT part of the
+ * validity check - slots store indices, and realloc preserves contents. */
 static int ir_symbol_index_ensure(const IRProgram *program) {
-  if (g_ir_symbol_index.program == program &&
-      g_ir_symbol_index.symbols_base == program->module_symbols &&
-      g_ir_symbol_index.symbol_count == program->module_symbol_count &&
-      g_ir_symbol_index.slots) {
+  if (g_ir_symbol_index.program == program && g_ir_symbol_index.slots &&
+      g_ir_symbol_index.symbol_count <= program->module_symbol_count &&
+      program->module_symbol_count * 2 <= g_ir_symbol_index.slot_count) {
+    for (size_t i = g_ir_symbol_index.symbol_count;
+         i < program->module_symbol_count; i++) {
+      ir_symbol_index_insert(program, i);
+    }
+    g_ir_symbol_index.symbols_base = program->module_symbols;
+    g_ir_symbol_index.symbol_count = program->module_symbol_count;
     return 1;
   }
 
   ir_symbol_index_reset();
 
   size_t slot_count = 16;
-  while (slot_count < program->module_symbol_count * 2) {
+  /* Size for 4x the current count so appends reuse the table for a while
+   * before the load-factor check above forces a rebuild. */
+  while (slot_count < program->module_symbol_count * 4) {
     slot_count *= 2;
   }
   size_t *slots = calloc(slot_count, sizeof(*slots));
@@ -1512,28 +1558,11 @@ static int ir_symbol_index_ensure(const IRProgram *program) {
   g_ir_symbol_index.slot_count = slot_count;
   g_ir_symbol_index.program = program;
   g_ir_symbol_index.symbols_base = program->module_symbols;
-  g_ir_symbol_index.symbol_count = program->module_symbol_count;
-
-  size_t mask = slot_count - 1;
+  g_ir_symbol_index.symbol_count = 0;
   for (size_t i = 0; i < program->module_symbol_count; i++) {
-    const char *name = program->module_symbols[i].name;
-    if (!name) {
-      continue;
-    }
-    size_t h = mettle_fnv1a_hash(name) & mask;
-    int duplicate = 0;
-    while (slots[h]) {
-      /* First entry with a given name wins, matching the linear scan. */
-      if (strcmp(program->module_symbols[slots[h] - 1].name, name) == 0) {
-        duplicate = 1;
-        break;
-      }
-      h = (h + 1) & mask;
-    }
-    if (!duplicate) {
-      slots[h] = i + 1;
-    }
+    ir_symbol_index_insert(program, i);
   }
+  g_ir_symbol_index.symbol_count = program->module_symbol_count;
 
   return 1;
 }

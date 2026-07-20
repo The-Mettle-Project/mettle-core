@@ -10,43 +10,78 @@
  * Type pointer so shared/recursive types translate once and cycles terminate. */
 #include "frontend/mtlc_frontend.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* Process-lifetime memo of (frontend Type* -> backend MtlcType*). A one-shot
- * compile never frees these; the arena leaks intentionally at exit. */
+ * compile never frees these; the arena leaks intentionally at exit.
+ *
+ * Open-addressing hash keyed on the frontend Type pointer. The memo used to be
+ * a linear array scanned per call; a frontend that allocates a Type per
+ * declaration pushes the memo into the hundreds of thousands, and the scan made
+ * translation quadratic across a module's globals. */
 typedef struct {
-  const Type *from;
+  const Type *from; /* NULL = empty slot */
   MtlcType *to;
 } TypeMemoEntry;
 
 static TypeMemoEntry *g_memo = NULL;
 static size_t g_memo_count = 0;
-static size_t g_memo_capacity = 0;
+static size_t g_memo_slots = 0; /* power of two */
+
+static size_t memo_hash(const Type *from) {
+  /* Fibonacci hashing spreads pointer-aligned keys across the table. */
+  return (size_t)(((uintptr_t)from >> 4) * (uintptr_t)11400714819323198485ull);
+}
 
 static MtlcType *memo_lookup(const Type *from) {
-  for (size_t i = 0; i < g_memo_count; i++) {
-    if (g_memo[i].from == from) {
-      return g_memo[i].to;
+  if (!g_memo) {
+    return NULL;
+  }
+  size_t mask = g_memo_slots - 1;
+  size_t h = memo_hash(from) & mask;
+  while (g_memo[h].from) {
+    if (g_memo[h].from == from) {
+      return g_memo[h].to;
     }
+    h = (h + 1) & mask;
   }
   return NULL;
 }
 
 static void memo_insert(const Type *from, MtlcType *to) {
-  if (g_memo_count == g_memo_capacity) {
-    size_t next = g_memo_capacity ? g_memo_capacity * 2 : 64;
+  if (g_memo_count * 2 >= g_memo_slots) {
+    size_t next = g_memo_slots ? g_memo_slots * 2 : 256;
     TypeMemoEntry *grown =
-        (TypeMemoEntry *)realloc(g_memo, next * sizeof(TypeMemoEntry));
+        (TypeMemoEntry *)calloc(next, sizeof(TypeMemoEntry));
     if (!grown) {
       return; /* out of memory: skip memoization; translation still proceeds */
     }
+    for (size_t i = 0; i < g_memo_slots; i++) {
+      if (!g_memo[i].from) {
+        continue;
+      }
+      size_t h = memo_hash(g_memo[i].from) & (next - 1);
+      while (grown[h].from) {
+        h = (h + 1) & (next - 1);
+      }
+      grown[h] = g_memo[i];
+    }
+    free(g_memo);
     g_memo = grown;
-    g_memo_capacity = next;
+    g_memo_slots = next;
   }
-  g_memo[g_memo_count].from = from;
-  g_memo[g_memo_count].to = to;
-  g_memo_count++;
+  size_t mask = g_memo_slots - 1;
+  size_t h = memo_hash(from) & mask;
+  while (g_memo[h].from && g_memo[h].from != from) {
+    h = (h + 1) & mask;
+  }
+  if (!g_memo[h].from) {
+    g_memo_count++;
+  }
+  g_memo[h].from = from;
+  g_memo[h].to = to;
 }
 
 static MtlcTypeKind translate_kind(TypeKind kind) {
