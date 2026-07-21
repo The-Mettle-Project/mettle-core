@@ -2747,6 +2747,14 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
         MirOperand lit = mir_float_const_operand(fn, in->lhs.float_value, dfb / 8);
         return mir_emit_fmov(fn, dst, lit, dfb / 8);
       }
+      if (in->lhs.kind == IR_OPERAND_INT) {
+        /* Integer literal into a float home (`float v;` zero-init): a float
+         * constant of that value, matching coerce_float_operand. A raw fmov
+         * of the integer immediate is unencodable as an XMM operand. */
+        MirOperand lit =
+            mir_float_const_operand(fn, (double)in->lhs.int_value, dfb / 8);
+        return mir_emit_fmov(fn, dst, lit, dfb / 8);
+      }
       MirOperand src = mir_value_operand(fn, g, ctx, map, &in->lhs);
       if (sfb && sfb != dfb) {
         /* Float store of a differently-sized value narrows/widens. */
