@@ -570,6 +570,14 @@ static int ir_function_assigns_symbol(const IRFunction *function,
         strcmp(instruction->dest.name, symbol_name) == 0) {
       return 1;
     }
+    /* A frontend may lower a write such as `n -= 8` to address-of plus store.
+     * Treat the address as a possible write so inlining never aliases the
+     * parameter directly to caller storage. */
+    if (instruction->op == IR_OP_ADDRESS_OF &&
+        instruction->lhs.kind == IR_OPERAND_SYMBOL && instruction->lhs.name &&
+        strcmp(instruction->lhs.name, symbol_name) == 0) {
+      return 1;
+    }
   }
   return 0;
 }

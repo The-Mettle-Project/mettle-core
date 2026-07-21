@@ -5066,6 +5066,31 @@ catch {
   Write-CaseResult -Name "direct_object_byte_load_store_alias" -Passed $false -Reason $_.Exception.Message
 }
 
+# Direct object backend release test: inline memcpy must preserve live RSI/RDI values
+$total++
+try {
+  $exePath = Join-Path $tmpDir "test_opt_memcpy_const.exe"
+
+  $buildOut = & $CompilerPath --build --emit-obj --linker internal --release tests\test_opt_memcpy_const.mettle -o $exePath 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "Direct object memcpy-live-registers build failed: $buildOut"
+  }
+  if (-not (Test-Path $exePath)) {
+    throw "Direct object memcpy-live-registers build did not produce an executable"
+  }
+
+  & $exePath 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Direct object memcpy-live-registers executable exited with $LASTEXITCODE (expected 0)"
+  }
+
+  Write-CaseResult -Name "direct_object_memcpy_live_registers" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "direct_object_memcpy_live_registers" -Passed $false -Reason $_.Exception.Message
+}
+
 # Direct object backend aggregate-local test: stack-allocated struct addressed and passed by pointer
 $total++
 try {
@@ -8254,6 +8279,35 @@ else {
   catch {
     $failed++
     Write-CaseResult -Name "calc_frontend" -Passed $false -Reason $_.Exception.Message
+  }
+}
+
+# Optimizer unit gate: loop-carried float symbols must not become temps before
+# loop unrolling, which would clone several producers under one temp name.
+if (-not $calcGcc) {
+  Write-Host "[SKIP] optimizer_float_copy (gcc not found)"
+}
+elseif (-not (Test-Path "bin\mtlc.lib")) {
+  Write-Host "[SKIP] optimizer_float_copy (bin\mtlc.lib not present)"
+}
+else {
+  $total++
+  try {
+    $floatCopyExe = Join-Path $tmpDir "optimizer_float_copy_test.exe"
+    $buildOut = & $calcGcc.Source -Wall -Wextra -std=c99 -Isrc -Iinclude `
+      tests/optimizer_float_copy_test.c bin/mtlc.lib -o $floatCopyExe -ldbghelp 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      throw "building optimizer_float_copy_test failed: $buildOut"
+    }
+    $runOut = & $floatCopyExe 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      throw "optimizer_float_copy_test failed: $runOut"
+    }
+    Write-CaseResult -Name "optimizer_float_copy" -Passed $true
+  }
+  catch {
+    $failed++
+    Write-CaseResult -Name "optimizer_float_copy" -Passed $false -Reason $_.Exception.Message
   }
 }
 

@@ -1438,8 +1438,11 @@ int code_generator_binary_emit_memcpy_inline(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
   long long byte_count = 0;
-  BinaryGpRegister dst_reg = BINARY_GP_RDI;
-  BinaryGpRegister src_reg = BINARY_GP_RSI;
+  /* The rep-movs helpers save RSI/RDI before moving these volatile operand
+   * registers into them. Loading the operands into RSI/RDI here would clobber
+   * live promoted values before the helpers had a chance to preserve them. */
+  BinaryGpRegister dst_reg = BINARY_GP_R10;
+  BinaryGpRegister src_reg = BINARY_GP_R11;
 
   if (!generator || !context || !instruction) {
     return 0;

@@ -2283,7 +2283,13 @@ static int ir_symbol_read_count_after_until_write_or_control(
 
   for (size_t i = start_index; i < function->instruction_count; i++) {
     const IRInstruction *instruction = &function->instructions[i];
-    if (instruction->op == IR_OP_JUMP || instruction->op == IR_OP_RETURN) {
+    /* A jump may be a loop backedge. Converting the symbol write before it to
+     * a temp lets later loop unrolling clone several writes to one temp name,
+     * which violates the backend's single-producer rule. */
+    if (instruction->op == IR_OP_JUMP) {
+      return -1;
+    }
+    if (instruction->op == IR_OP_RETURN) {
       return count;
     }
     if (instruction->op == IR_OP_LABEL || instruction->op == IR_OP_BRANCH_ZERO ||

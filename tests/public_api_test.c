@@ -504,6 +504,18 @@ static MtlcModule *build_native_module(void) {
     mtlc_builder_function(b, "putchar", i32, pn, pt, 1, /*extern=*/1);
   }
 
+  /* The inliner must not alias this address-taken parameter to caller storage. */
+  {
+    const char *pn[] = {"value"};
+    const MtlcType *pt[] = {i64};
+    MtlcFn *touch =
+        mtlc_builder_function(b, "touch_copy", i64, pn, pt, 1, 0);
+    MtlcValue value = mtlc_fn_param(touch, 0);
+    MtlcValue address = mtlc_address_of(touch, value, pi64);
+    mtlc_store(touch, address, mtlc_const_int(touch, i64, 1), i64);
+    mtlc_return(touch, mtlc_const_int(touch, i64, 0));
+  }
+
   MtlcFn *m = mtlc_builder_function(b, "main", i64, NULL, NULL, 0, 0);
 
   /* heap memory through an extern + pointer store/load:
@@ -527,6 +539,9 @@ static MtlcModule *build_native_module(void) {
   MtlcValue fi = mtlc_cast(m, fprod, i64);
   MtlcValue fdiff = mtlc_binary(m, "-", fi, mtlc_const_int(m, i64, 10), i64);
   mtlc_assign(m, x, mtlc_binary(m, "+", x, fdiff, i64));
+
+  /* touch_copy mutates only its by-value parameter; x must remain 42. */
+  mtlc_call(m, "touch_copy", &x, 1, i64);
 
   /* address-of a local + store/load through the pointer: l=7; *&l=8; (+0) */
   MtlcValue l = mtlc_local(m, "l", i64);
