@@ -1024,22 +1024,19 @@ int code_generator_binary_instruction_result_is_float64(
                symbol->data.function.return_type) != 0;
 
   case IR_OP_CALL_INDIRECT:
-    symbol = generator && generator->ir_program &&
-                     instruction->lhs.kind == IR_OPERAND_SYMBOL &&
-                     instruction->lhs.name
-                 ? code_generator_lookup_symbol(generator,
-                                       instruction->lhs.name)
-                 : NULL;
-    function_type =
-        (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
-            ? symbol->type
-            : NULL;
+    function_type = code_generator_binary_indirect_callee_type(
+        generator, context, instruction);
     return code_generator_binary_resolved_type_float_bits(
                function_type ? function_type->fn_return_type : NULL) != 0;
 
   case IR_OP_CAST:
-    return code_generator_binary_named_type_is_float64(generator,
-                                                       instruction->text, 0);
+    /* Any floating target marks the dest temp, float32 as well as float64.
+     * The float64-only predicate left a cast to float32 unmarked, so
+     * mir_lower saw dest float bits of 0 and lowered `(float)i` down the
+     * integer path: the raw bit pattern landed in the slot and read back as
+     * a denormal. Same fault the float32 return value hit above. */
+    return code_generator_binary_named_type_float_bits(generator,
+                                                       instruction->text) != 0;
 
   case IR_OP_LOAD:
     /* A value dereferenced from a float* / struct member is floating in the
@@ -1093,16 +1090,8 @@ int code_generator_binary_instruction_result_float_bits(
                : 64;
 
   case IR_OP_CALL_INDIRECT:
-    symbol = generator && generator->ir_program &&
-                     instruction->lhs.kind == IR_OPERAND_SYMBOL &&
-                     instruction->lhs.name
-                 ? code_generator_lookup_symbol(generator,
-                                       instruction->lhs.name)
-                 : NULL;
-    function_type =
-        (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
-            ? symbol->type
-            : NULL;
+    function_type = code_generator_binary_indirect_callee_type(
+        generator, context, instruction);
     return function_type ? code_generator_binary_resolved_type_float_bits(
                                function_type->fn_return_type)
                          : 64;
@@ -3071,10 +3060,47 @@ emit_failure:
   return 0;
 }
 
-int code_generator_binary_validate_indirect_call(
+/* The function-pointer type of an indirect call's callee: a local declared
+ * with a function-pointer descriptor first (the C frontend routes every
+ * indirect call through one, so the signature is per call site), then a
+ * program-scope symbol. NULL when neither carries a signature. */
+MtlcType *code_generator_binary_indirect_callee_type(
     CodeGenerator *generator, BinaryFunctionContext *context,
     const IRInstruction *instruction) {
   const CgSym *symbol = NULL;
+
+  if (!generator || !instruction ||
+      instruction->lhs.kind != IR_OPERAND_SYMBOL || !instruction->lhs.name) {
+    return NULL;
+  }
+  if (context && context->ir_function) {
+    const IRFunction *irf = context->ir_function;
+    for (size_t i = 0; i < irf->instruction_count; i++) {
+      const IRInstruction *in = &irf->instructions[i];
+      if (in->op == IR_OP_DECLARE_LOCAL && in->dest.name && in->text &&
+          strcmp(in->dest.name, instruction->lhs.name) == 0) {
+        MtlcType *t =
+            code_generator_binary_get_resolved_type(generator, in->text, 0);
+        if (t && t->kind == MTLC_TYPE_FUNCTION_POINTER) {
+          return t;
+        }
+        break;
+      }
+    }
+  }
+  symbol = generator->ir_program
+               ? code_generator_lookup_symbol(generator,
+                                              instruction->lhs.name)
+               : NULL;
+  return (symbol && symbol->type &&
+          symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
+             ? symbol->type
+             : NULL;
+}
+
+int code_generator_binary_validate_indirect_call(
+    CodeGenerator *generator, BinaryFunctionContext *context,
+    const IRInstruction *instruction) {
   MtlcType *function_type = NULL;
 
   if (!generator || !context || !instruction ||
@@ -3082,15 +3108,13 @@ int code_generator_binary_validate_indirect_call(
     return 1;
   }
 
-  symbol = generator->ir_program
-               ? code_generator_lookup_symbol(generator,
-                                     instruction->lhs.name)
-               : NULL;
-  if (!symbol || !symbol->type || symbol->type->kind != MTLC_TYPE_FUNCTION_POINTER) {
+  function_type =
+      code_generator_binary_indirect_callee_type(generator, context,
+                                                 instruction);
+  if (!function_type) {
     return 1;
   }
 
-  function_type = symbol->type;
   if (!code_generator_binary_resolved_type_is_abi_supported(
           function_type->fn_return_type, 1)) {
     code_generator_set_error(
@@ -3713,14 +3737,10 @@ int code_generator_binary_emit_call_indirect(
     return 0;
   }
 
-  symbol = generator->ir_program
-               ? code_generator_lookup_symbol(generator,
-                                     instruction->lhs.name)
-               : NULL;
+  (void)symbol;
   function_type =
-      (symbol && symbol->type && symbol->type->kind == MTLC_TYPE_FUNCTION_POINTER)
-          ? symbol->type
-          : NULL;
+      code_generator_binary_indirect_callee_type(generator, context,
+                                                 instruction);
 
   const BinaryAbi *abi = code_generator_binary_active_abi();
   size_t indirect_arg_count = instruction->argument_count;

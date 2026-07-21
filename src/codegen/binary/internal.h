@@ -688,6 +688,7 @@ int code_generator_binary_type_is_gp_promotable(MtlcType *type);
 int code_generator_binary_type_is_string(MtlcType *type);
 int code_generator_binary_validate_call(CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_validate_indirect_call( CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
+MtlcType *code_generator_binary_indirect_callee_type( CodeGenerator *generator, BinaryFunctionContext *context, const IRInstruction *instruction);
 int code_generator_binary_validate_signature(CodeGenerator *generator, IRFunction *ir_function);
 int code_generator_declare_binary_externs(CodeGenerator *generator);
 int code_generator_emit_binary_function(CodeGenerator *generator,
