@@ -35,6 +35,7 @@ struct MtlcFn {
   MtlcBuilder *builder;
   const MtlcType *return_type;
   char **param_names;  /* borrowed from the FnDecl */
+  const MtlcType **param_types; /* borrowed from the FnDecl */
   size_t param_count;
   IROperand *values;   /* value-handle table; each owns its operand */
   size_t value_count, value_capacity;
@@ -287,6 +288,7 @@ static MtlcFn *builder_function_impl(MtlcBuilder *builder, const char *name,
   fn->builder = builder;
   fn->return_type = return_type;
   fn->param_names = decl->param_names;
+  fn->param_types = decl->param_types;
   fn->param_count = param_count;
 
   if (builder->fn_count == builder->fn_capacity) {
@@ -323,6 +325,24 @@ MtlcFn *mtlc_builder_kernel(MtlcBuilder *builder, const char *name,
 }
 
 /* ------------------------------------------------------------------- values */
+
+/* IEEE width (0/32/64) of a type, 0 when not floating. */
+static int float_bits_of(const MtlcType *t) {
+  if (!t || !mtlc_type_is_float(t)) {
+    return 0;
+  }
+  return (t->kind == MTLC_TYPE_FLOAT32) ? 32 : 64;
+}
+
+/* Record a float value's width on its handle, so a later use site (CAST in
+ * particular) can tell what it is holding. The operand is copied into every
+ * instruction that uses the handle, so codegen's operand_float_bits sees the
+ * width too. */
+static void value_set_float_bits(MtlcFn *fn, MtlcValue v, int bits) {
+  if (bits && v >= 0 && (size_t)v < fn->value_count) {
+    fn->values[v].float_bits = bits;
+  }
+}
 
 static MtlcValue push_value(MtlcFn *fn, IROperand op) {
   if (fn->value_count == fn->value_capacity) {
@@ -373,7 +393,11 @@ MtlcValue mtlc_fn_param(MtlcFn *fn, size_t index) {
     }
     return MTLC_NO_VALUE;
   }
-  return push_value(fn, ir_operand_symbol(fn->param_names[index]));
+  MtlcValue res = push_value(fn, ir_operand_symbol(fn->param_names[index]));
+  if (fn->param_types) {
+    value_set_float_bits(fn, res, float_bits_of(fn->param_types[index]));
+  }
+  return res;
 }
 
 MtlcValue mtlc_const_int(MtlcFn *fn, const MtlcType *type, long long value) {
@@ -393,6 +417,7 @@ MtlcValue mtlc_local(MtlcFn *fn, const char *name, const MtlcType *type) {
   }
   record_type(fn->builder, type);
   MtlcValue res = push_value(fn, ir_operand_symbol(name));
+  value_set_float_bits(fn, res, float_bits_of(type));
   const IROperand *dest = value_operand(fn, res);
   if (!dest) {
     return MTLC_NO_VALUE;
@@ -413,7 +438,14 @@ MtlcValue mtlc_global_ref(MtlcFn *fn, const char *name) {
     }
     return MTLC_NO_VALUE;
   }
-  return push_value(fn, ir_operand_symbol(name));
+  MtlcValue res = push_value(fn, ir_operand_symbol(name));
+  for (size_t i = 0; i < fn->builder->global_count; i++) {
+    if (strcmp(fn->builder->globals[i].name, name) == 0) {
+      value_set_float_bits(fn, res, float_bits_of(fn->builder->globals[i].type));
+      break;
+    }
+  }
+  return res;
 }
 
 MtlcValue mtlc_const_float(MtlcFn *fn, const MtlcType *type, double value) {
@@ -478,6 +510,12 @@ MtlcValue mtlc_binary(MtlcFn *fn, const char *op, MtlcValue lhs, MtlcValue rhs,
   if (mtlc_type_is_float(result_type)) {
     inst.is_float = 1;
     inst.float_bits = (int)(result_type->size * 8);
+    /* Only arithmetic yields a float VALUE; a float comparison is flagged
+     * is_float (so codegen picks ucomis) but produces an integer 0/1. */
+    if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+        strcmp(op, "*") == 0 || strcmp(op, "/") == 0) {
+      value_set_float_bits(fn, res, inst.float_bits);
+    }
   } else if (mtlc_type_is_unsigned(result_type)) {
     /* unsigned result type selects unsigned / % >> and compares */
     inst.is_unsigned = 1;
@@ -514,6 +552,9 @@ MtlcValue mtlc_unary(MtlcFn *fn, const char *op, MtlcValue operand,
   if (mtlc_type_is_float(result_type)) {
     inst.is_float = 1;
     inst.float_bits = (int)(result_type->size * 8);
+    if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0) {
+      value_set_float_bits(fn, res, inst.float_bits);
+    }
   }
   emit(fn, &inst);
   return res;
@@ -566,6 +607,7 @@ MtlcValue mtlc_call(MtlcFn *fn, const char *callee, const MtlcValue *args,
   inst.arguments = argv;
   inst.argument_count = arg_count;
   inst.value_type = (MtlcType *)return_type;
+  value_set_float_bits(fn, res, float_bits_of(return_type));
   emit(fn, &inst);
   free(argv); /* elements were cloned by append; free the container only */
   return res;
@@ -1358,6 +1400,7 @@ MtlcValue mtlc_call_indirect(MtlcFn *fn, MtlcValue callee,
   inst.arguments = argv;
   inst.argument_count = arg_count;
   inst.value_type = (MtlcType *)return_type;
+  value_set_float_bits(fn, res, float_bits_of(return_type));
   emit(fn, &inst);
   free(argv);
   return res;
@@ -1388,11 +1431,16 @@ MtlcValue mtlc_cast(MtlcFn *fn, MtlcValue value, const MtlcType *type) {
   inst.lhs = vc;
   inst.text = (char *)type_name(type);
   inst.value_type = (MtlcType *)type;
-  if (mtlc_type_is_float(type)) {
+  /* is_float/float_bits on a CAST describe the SOURCE operand (ir_lowering's
+   * contract; codegen picks cvttss2si vs cvttsd2si from it). The TARGET is
+   * resolved from inst.text. Setting them from the target here made the
+   * emitter read a float32 source as already-64-bit — or, for a float->int
+   * cast, as an integer, handing back the raw IEEE bit pattern. */
+  if (vc.float_bits == 32 || vc.float_bits == 64) {
     inst.is_float = 1;
-    inst.float_bits = (int)(type->size * 8);
-    fn->values[res].float_bits = inst.float_bits;
+    inst.float_bits = vc.float_bits;
   }
+  value_set_float_bits(fn, res, float_bits_of(type));
   emit(fn, &inst);
   return res;
 }
