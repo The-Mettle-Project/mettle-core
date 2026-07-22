@@ -103,6 +103,17 @@ static int ir_try_compose_single_use_cast(IRFunction *function,
     return 1;
   }
 
+  /* A narrowing cast followed by a widening one is not one conversion: it
+   * truncates, then extends by the NARROW type's sign. `(int64)(int32)u` on a
+   * uint32 has to drop the high half and then bring bit 31 down the whole
+   * register, and no single cast says that. Composing the pair kept only the
+   * int32 and lost the sign extension, so Mettle's own linker read a -4
+   * relocation addend as 4294967292 and rejected every REL32 as out of range.
+   * Leave the pair alone; only a chain that keeps narrowing composes. */
+  if (cast_size > producer_size) {
+    return 1;
+  }
+
   /* Compose integer cast chains by keeping only the narrower conversion.
    * Equal-width chains keep the later cast so signed/unsigned reinterpretation
    * at that width remains visible. A later dead-temp pass removes the first
