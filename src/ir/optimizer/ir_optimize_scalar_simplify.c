@@ -77,6 +77,7 @@ static int ir_try_compose_single_use_cast(IRFunction *function,
   IRInstruction *producer = NULL;
   size_t producer_index = 0;
   int producer_size = 0;
+  int producer_unsigned = 0;
   int cast_size = 0;
   const char *composed_type = NULL;
   char *type_copy = NULL;
@@ -99,18 +100,19 @@ static int ir_try_compose_single_use_cast(IRFunction *function,
 
   producer = &function->instructions[producer_index];
   if (producer->op != IR_OP_CAST || producer->is_float || !producer->text ||
-      !ir_builtin_integer_type_info(producer->text, &producer_size, NULL)) {
+      !ir_builtin_integer_type_info(producer->text, &producer_size,
+                                    &producer_unsigned)) {
     return 1;
   }
 
-  /* A narrowing cast followed by a widening one is not one conversion: it
-   * truncates, then extends by the NARROW type's sign. `(int64)(int32)u` on a
-   * uint32 has to drop the high half and then bring bit 31 down the whole
-   * register, and no single cast says that. Composing the pair kept only the
-   * int32 and lost the sign extension, so Mettle's own linker read a -4
-   * relocation addend as 4294967292 and rejected every REL32 as out of range.
-   * Leave the pair alone; only a chain that keeps narrowing composes. */
-  if (cast_size > producer_size) {
+  /* Composing keeps the narrower conversion and trusts the backend to
+   * materialize it at the destination's width, extending by the narrow type's
+   * sign. That holds everywhere but one place: a 32-bit operation on x86-64
+   * zero-extends into the 64-bit register, so a signed 32-bit narrowing left
+   * the high half clear instead of sign-extended. `(int64)(int32)u` on a
+   * uint32 then read -4 back as 4294967292, and Mettle's own linker rejected
+   * every REL32 relocation as out of range. Leave that one pair uncomposed. */
+  if (cast_size > producer_size && producer_size == 4 && !producer_unsigned) {
     return 1;
   }
 
