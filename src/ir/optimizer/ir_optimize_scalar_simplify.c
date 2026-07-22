@@ -597,6 +597,27 @@ static int ir_cp_operand_constant(const IRTempValueMap *temp_map,
   return 0;
 }
 
+/* A fold runs in 64 bits, but the instruction's result type may be narrower,
+ * and the value has to come back in that width or the next instruction reads a
+ * number C never produced. `(int)15 << 28` is 0xF0000000, which is negative as
+ * an int: folding it as 64-bit left it positive, so the `>> 28` that read it
+ * back shifted in zeros and `(x << 28) >> 28` gave 15 instead of -1. */
+static long long ir_narrow_folded(const MtlcType *type, long long value) {
+  if (!type) {
+    return value;
+  }
+  switch (type->kind) {
+  case MTLC_TYPE_INT8: return (long long)(signed char)value;
+  case MTLC_TYPE_INT16: return (long long)(short)value;
+  case MTLC_TYPE_INT32: return (long long)(int)value;
+  case MTLC_TYPE_UINT8: return (long long)(unsigned char)value;
+  case MTLC_TYPE_UINT16: return (long long)(unsigned short)value;
+  case MTLC_TYPE_UINT32: return (long long)(unsigned int)value;
+  case MTLC_TYPE_BOOL: return value ? 1 : 0;
+  default: return value;
+  }
+}
+
 /* Fold `dest = a op b` to `dest <- C` the moment the propagation maps prove
  * both operands constant, INSIDE the propagation walk. Recording the result
  * immediately lets an entire arithmetic chain over one variable
@@ -690,6 +711,14 @@ static void ir_cp_fold_constant_binary(const IRFunction *function,
     } else {
       result = (result << shift) >> shift;
     }
+  }
+  if (narrow_bits == 0 && instruction->dest.kind != IR_OPERAND_SYMBOL) {
+    /* A narrow temp is canonicalized at its definition (issue #13), and this
+     * fold replaces that definition, so it has to hand back the same canonical
+     * value. Without this `(x << 28) >> 28` folded to 0xF0000000 as a 64-bit
+     * temp, and the arithmetic shift that read it back saw a positive number:
+     * the textbook hand-rolled sign extension returned 15 instead of -1. */
+    result = ir_narrow_folded(instruction->value_type, result);
   }
   ir_rewrite_to_assign_int(instruction, result, any_changed);
 }
@@ -1047,7 +1076,9 @@ static int ir_try_fold_integer_binary(IRInstruction *instruction, int *changed) 
       return 0;
     }
     if (folded) {
-      return ir_rewrite_to_assign_int(instruction, result, changed);
+      return ir_rewrite_to_assign_int(
+          instruction, ir_narrow_folded(instruction->value_type, result),
+          changed);
     }
   }
 
