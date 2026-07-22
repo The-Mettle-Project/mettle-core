@@ -72,6 +72,15 @@ typedef struct {
    * home covers the whole aggregate (field stores reach past the first 8
    * bytes). Always a multiple of 8. */
   int home_bytes;
+  /* Declared scalar width (1/2/4) of an address-taken GP local, with its
+   * signedness. 0 means a full 8-byte value. An aliasing pointer writes only
+   * the declared bytes, so the upper bytes of the 8-byte home are undefined
+   * and a by-name load must extend from this width. Loading the whole slot
+   * read stack residue: `rt_unpack(x, &neg, ...)` stored 4 bytes, the 64-bit
+   * read of `neg` picked up garbage above them, and every positive double
+   * printed with a minus sign whenever the residue was nonzero. */
+  int home_width;
+  int home_signed;
   /* Set for values defined by the prologue (parameters and the hidden
    * indirect-return pointer): they are ALL simultaneously live from function
    * entry, each arriving in its own incoming ABI register. Two such values must

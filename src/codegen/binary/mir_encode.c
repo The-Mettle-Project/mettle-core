@@ -53,6 +53,36 @@ static int frame_disp(const MirFunction *fn, int rbp_disp) {
                                          : rbp_disp;
 }
 
+/* Load a GP vreg's spilled home into `dst`. An address-taken narrow scalar
+ * (home_width 1/2/4) is authoritative only at its declared width: an
+ * aliasing pointer writes exactly those bytes, so the load extends from them
+ * instead of scooping whatever the rest of the 8-byte slot last held. */
+static int gp_home_load(MirFunction *fn, const MirVreg *v,
+                        BinaryGpRegister dst) {
+  BinaryCodeBuffer *code = &fn->context->code;
+  BinaryGpRegister base = frame_base(fn);
+  int disp = frame_disp(fn, -spill_off(v));
+  if (v->address_taken) {
+    switch (v->home_width) {
+    case 4:
+      return v->home_signed
+                 ? binary_emit_movsxd_reg_mem(code, dst, base, disp)
+                 : binary_emit_mov_reg_mem32(code, dst, base, disp);
+    case 2:
+      return v->home_signed
+                 ? binary_emit_movsx_reg_mem16(code, dst, base, disp)
+                 : binary_emit_movzx_reg_mem16(code, dst, base, disp);
+    case 1:
+      return v->home_signed
+                 ? binary_emit_movsx_reg_mem8(code, dst, base, disp)
+                 : binary_emit_movzx_reg_mem8(code, dst, base, disp);
+    default:
+      break;
+    }
+  }
+  return binary_emit_mov_reg_mem(code, dst, base, disp);
+}
+
 /* Emit: target <- value of `op`. */
 static int materialize_into(MirFunction *fn, const MirOperand *op,
                             BinaryGpRegister target) {
@@ -66,8 +96,7 @@ static int materialize_into(MirFunction *fn, const MirOperand *op,
       }
       return 1;
     }
-    return binary_emit_mov_reg_mem(code, target, frame_base(fn),
-                                   frame_disp(fn, -spill_off(v)));
+    return gp_home_load(fn, v, target);
   }
   case MIR_OPK_PHYS:
     if ((BinaryGpRegister)op->phys != target) {
@@ -95,8 +124,7 @@ static BinaryGpRegister value_reg(MirFunction *fn, const MirOperand *op,
     if (v->in_register) {
       return (BinaryGpRegister)v->phys;
     }
-    *ok = binary_emit_mov_reg_mem(&fn->context->code, scratch, frame_base(fn),
-                                  frame_disp(fn, -spill_off(v)));
+    *ok = gp_home_load(fn, v, scratch);
     return scratch;
   }
   case MIR_OPK_PHYS:
@@ -1923,8 +1951,7 @@ int mir_encode(MirFunction *fn) {
       if (!dst_in_reg) {
         const MirVreg *v = &fn->vregs[in->dst.vreg];
         target = SCRATCH_A;
-        if (!binary_emit_mov_reg_mem(&ctx->code, SCRATCH_A, frame_base(fn),
-                                     frame_disp(fn, -spill_off(v)))) {
+        if (!gp_home_load(fn, v, SCRATCH_A)) {
           ok = enc_err(fn, "out of memory loading cmov dst");
           break;
         }

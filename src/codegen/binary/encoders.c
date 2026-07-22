@@ -494,6 +494,33 @@ int binary_emit_mov_reg_mem32(BinaryCodeBuffer *buffer,
                                       base, displacement);
 }
 
+/* movsx r64, byte [base+disp] : REX.W 0F BE /r */
+int binary_emit_movsx_reg_mem8(BinaryCodeBuffer *buffer,
+                                      BinaryGpRegister destination,
+                                      BinaryGpRegister base,
+                                      int displacement) {
+  return binary_emit_memory_access_ex(buffer, 0, 1, 0x0F, 1, 0xBE,
+                                      destination, base, displacement);
+}
+
+/* movsx r64, word [base+disp] : REX.W 0F BF /r */
+int binary_emit_movsx_reg_mem16(BinaryCodeBuffer *buffer,
+                                       BinaryGpRegister destination,
+                                       BinaryGpRegister base,
+                                       int displacement) {
+  return binary_emit_memory_access_ex(buffer, 0, 1, 0x0F, 1, 0xBF,
+                                      destination, base, displacement);
+}
+
+/* movsxd r64, dword [base+disp] : REX.W 63 /r */
+int binary_emit_movsxd_reg_mem(BinaryCodeBuffer *buffer,
+                                      BinaryGpRegister destination,
+                                      BinaryGpRegister base,
+                                      int displacement) {
+  return binary_emit_memory_access_ex(buffer, 0, 1, 0x63, 0, 0, destination,
+                                      base, displacement);
+}
+
 int binary_emit_mov_mem_reg8(BinaryCodeBuffer *buffer,
                                      BinaryGpRegister base, int displacement,
                                      BinaryGpRegister source) {

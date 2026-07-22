@@ -4000,6 +4000,18 @@ static int mir_lower_instruction(MirFunction *fn, CodeGenerator *g,
         size_t sz = code_generator_abi_type_size(lt);
         fn->vregs[src.vreg].home_bytes = (int)((sz + 7) & ~(size_t)7);
       }
+      /* A narrow scalar's home is authoritative only at its declared width:
+       * the aliasing pointer writes exactly those bytes, so a by-name read
+       * must extend from them rather than load the whole 8-byte slot. */
+      if (lt && !code_generator_type_is_aggregate(lt) &&
+          code_generator_binary_resolved_type_float_bits(lt) == 0) {
+        int w = code_generator_binary_resolved_type_scalar_size(lt);
+        if (w == 1 || w == 2 || w == 4) {
+          fn->vregs[src.vreg].home_width = w;
+          fn->vregs[src.vreg].home_signed =
+              code_generator_binary_resolved_type_is_signed_integer(lt);
+        }
+      }
     }
     return mir_emit1(fn, MIR_LEA_LOCAL, dst, src, mir_op_none(), 8, 0, 0);
   }
