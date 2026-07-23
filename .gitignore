@@ -1,4 +1,4 @@
-bin/
+﻿bin/
 obj/
 dist/
 .claude/
@@ -39,3 +39,7 @@ _mlopt.disp
 _mlopt.explain
 *.mprof
 ui_test.mettle
+promotion/
+.vs/
+tests/profiler_test.mettle
+tests/parse_stress_test.mettle
