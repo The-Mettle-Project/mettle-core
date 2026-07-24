@@ -1833,7 +1833,18 @@ ASTNode *parser_parse_primary_expression(Parser *parser) {
     char *value = parser->current_token.value;
     ASTNode *result;
 
-    if (strchr(value, '.')) {
+    // A decimal point or an exponent marker makes it a float. The radix prefix
+    // has to be ruled out first: hex digits include 'e', so 0x1E is an integer
+    // and only an unprefixed literal can carry an exponent.
+    int has_radix_prefix =
+        value[0] == '0' && (value[1] == 'x' || value[1] == 'X' ||
+                            value[1] == 'b' || value[1] == 'B');
+    int is_float_literal =
+        strchr(value, '.') != NULL ||
+        (!has_radix_prefix &&
+         (strchr(value, 'e') != NULL || strchr(value, 'E') != NULL));
+
+    if (is_float_literal) {
       double float_val = atof(value);
       result = ast_create_float_literal(float_val, location);
     } else {

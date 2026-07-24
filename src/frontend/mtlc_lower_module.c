@@ -193,6 +193,31 @@ static int module_symbol_numeric(const IRProgram *program, const char *name,
 /* Evaluate a constant global initializer expression to a NumConst. Ported from
  * code_generator_binary_eval_numeric_global_initializer (globals.c), with
  * identifier references resolved against the module symbols added so far. */
+/* Recognises `&identifier` as a global initializer. The address of another
+ * module symbol -- a function for a dispatch table, or a global for an alias --
+ * is only known at link time, so it cannot be folded to a constant. Returns the
+ * referenced name (borrowed from the AST) or NULL. */
+static const char *lower_module_address_of_symbol_name(ASTNode *expression) {
+  UnaryExpression *unary = NULL;
+  Identifier *identifier = NULL;
+
+  if (!expression || expression->type != AST_UNARY_EXPRESSION) {
+    return NULL;
+  }
+  unary = (UnaryExpression *)expression->data;
+  if (!unary || !unary->operator || strcmp(unary->operator, "&") != 0) {
+    return NULL;
+  }
+  if (!unary->operand || unary->operand->type != AST_IDENTIFIER) {
+    return NULL;
+  }
+  identifier = (Identifier *)unary->operand->data;
+  if (!identifier || !identifier->name || identifier->name[0] == '\0') {
+    return NULL;
+  }
+  return identifier->name;
+}
+
 static int eval_numeric(const IRProgram *program, ASTNode *expression,
                         NumConst *out) {
   if (!expression || !out) {
@@ -513,6 +538,7 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
             }
           } else {
             NumConst c = {0};
+            const char *addressed = lower_module_address_of_symbol_name(vd->initializer);
             if (eval_numeric(program, vd->initializer, &c)) {
               entry.has_initializer = 1;
               entry.init_is_float = c.is_float;
@@ -522,6 +548,10 @@ static void populate_module_symbols(IRProgram *program, ASTNode *ast_program,
               } else {
                 entry.init_bits = c.int_value;
               }
+            } else if (addressed) {
+              /* `&other_symbol`: the address is a link-time value, so record the
+               * name and let the backend emit a relocation. */
+              entry.init_symbol_ref = (char *)addressed;
             } else {
               entry.has_unfoldable_initializer = 1;
             }

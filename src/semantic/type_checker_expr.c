@@ -2815,8 +2815,10 @@ Type *type_checker_check_binary_expression(TypeChecker *checker,
   if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 || strcmp(op, "<") == 0 ||
       strcmp(op, "<=") == 0 || strcmp(op, ">") == 0 || strcmp(op, ">=") == 0) {
     int is_equality = (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0);
-    int left_is_pointer = left_type->kind == TYPE_POINTER;
-    int right_is_pointer = right_type->kind == TYPE_POINTER;
+    /* Function pointers compare like any other pointer, which is how code
+     * checks whether an entry point was resolved: `if (handler == 0)`. */
+    int left_is_pointer = type_checker_type_accepts_null_pointer(left_type);
+    int right_is_pointer = type_checker_type_accepts_null_pointer(right_type);
 
     if (left_is_pointer || right_is_pointer) {
       if (!is_equality) {

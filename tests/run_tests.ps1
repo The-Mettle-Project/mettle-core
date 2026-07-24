@@ -2174,6 +2174,128 @@ catch {
   Write-CaseResult -Name "generics_runtime" -Passed $false -Reason $_.Exception.Message
 }
 
+# Global aggregates and function-pointer globals: arrays/structs at module
+# scope, null-initialized function pointers, and globals initialized with the
+# address of another symbol (which lowers to a relocation and must keep the
+# referenced function alive through dead-function elimination). 55 = all intact.
+$total++
+try {
+  foreach ($mode in @("", "--release")) {
+    $label = if ($mode -eq "") { "debug" } else { "release" }
+    $exePath = Join-Path $tmpDir ("global_aggregates_and_fnptr_{0}.exe" -f $label)
+    if ($mode -eq "") {
+      $buildOut = & $CompilerPath --build --linker internal "tests\test_global_aggregates_and_fnptr.mettle" -o $exePath 2>&1 | Out-String
+    }
+    else {
+      $buildOut = & $CompilerPath --build --linker internal --release "tests\test_global_aggregates_and_fnptr.mettle" -o $exePath 2>&1 | Out-String
+    }
+    if ($LASTEXITCODE -ne 0) {
+      throw "global aggregates $label build failed: $buildOut"
+    }
+    & $exePath 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 55) {
+      throw "global aggregates $label exited with $LASTEXITCODE (expected 55)"
+    }
+  }
+  Write-CaseResult -Name "global_aggregates_and_fnptr" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "global_aggregates_and_fnptr" -Passed $false -Reason $_.Exception.Message
+}
+
+# Struct-return regression: an aggregate returned through a hidden pointer must
+# be copied whole into a field, array element, or pointer target, not just its
+# first machine word. 55 = every destination form intact.
+$total++
+try {
+  foreach ($mode in @("", "--release")) {
+    $label = if ($mode -eq "") { "debug" } else { "release" }
+    $exePath = Join-Path $tmpDir ("struct_return_to_field_{0}.exe" -f $label)
+    if ($mode -eq "") {
+      $buildOut = & $CompilerPath --build --linker internal "tests\test_struct_return_to_field.mettle" -o $exePath 2>&1 | Out-String
+    }
+    else {
+      $buildOut = & $CompilerPath --build --linker internal --release "tests\test_struct_return_to_field.mettle" -o $exePath 2>&1 | Out-String
+    }
+    if ($LASTEXITCODE -ne 0) {
+      throw "struct-return $label build failed: $buildOut"
+    }
+    & $exePath 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 55) {
+      throw "struct-return $label exited with $LASTEXITCODE (expected 55): a returned aggregate was truncated on assignment"
+    }
+  }
+  Write-CaseResult -Name "struct_return_to_field" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "struct_return_to_field" -Passed $false -Reason $_.Exception.Message
+}
+
+# Nested-loop unroll regression: a loop whose bound is the enclosing loop's
+# counter must have its trip count recomputed per outer iteration. The symbol
+# map is built by a linear scan before the header, so without back-edge
+# handling the bound froze at its pre-loop value. 55 = every shape correct.
+$total++
+try {
+  foreach ($mode in @("", "--release")) {
+    $label = if ($mode -eq "") { "debug" } else { "release" }
+    $exePath = Join-Path $tmpDir ("opt_nested_loop_variable_bound_{0}.exe" -f $label)
+    if ($mode -eq "") {
+      $buildOut = & $CompilerPath --build --linker internal "tests\test_opt_nested_loop_variable_bound.mettle" -o $exePath 2>&1 | Out-String
+    }
+    else {
+      $buildOut = & $CompilerPath --build --linker internal --release "tests\test_opt_nested_loop_variable_bound.mettle" -o $exePath 2>&1 | Out-String
+    }
+    if ($LASTEXITCODE -ne 0) {
+      throw "nested-loop unroll $label build failed: $buildOut"
+    }
+    & $exePath 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 55) {
+      throw "nested-loop unroll $label exited with $LASTEXITCODE (expected 55): an inner trip count was frozen at its pre-loop value"
+    }
+  }
+  Write-CaseResult -Name "opt_nested_loop_variable_bound" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "opt_nested_loop_variable_bound" -Passed $false -Reason $_.Exception.Message
+}
+
+# std/math accuracy. Self-checking against independently computed reference
+# values plus identity sweeps; prints "MATH: ALL OK" and exits 0 only when every
+# assertion holds. Run at both optimisation levels because the library
+# reinterprets doubles through pointer casts, which --release must not disturb.
+$total++
+try {
+  foreach ($mode in @("", "--release")) {
+    $label = if ($mode -eq "") { "debug" } else { "release" }
+    $exePath = Join-Path $tmpDir ("std_math_{0}.exe" -f $label)
+    if ($mode -eq "") {
+      $buildOut = & $CompilerPath --build --linker internal "tests\test_std_math.mettle" -o $exePath 2>&1 | Out-String
+    }
+    else {
+      $buildOut = & $CompilerPath --build --linker internal --release "tests\test_std_math.mettle" -o $exePath 2>&1 | Out-String
+    }
+    if ($LASTEXITCODE -ne 0) {
+      throw "std/math $label build failed: $buildOut"
+    }
+    $runOut = & $exePath 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      throw "std/math $label reported failures: $runOut"
+    }
+    if ($runOut -notmatch "MATH: ALL OK") {
+      throw "std/math $label output missing success marker: $runOut"
+    }
+  }
+  Write-CaseResult -Name "std_math" -Passed $true
+}
+catch {
+  $failed++
+  Write-CaseResult -Name "std_math" -Passed $false -Reason $_.Exception.Message
+}
+
 # Fused-loop threaded-exit regression: a vectorizable loop in an if/else THEN
 # branch whose exit was jump-threaded to the join must not fall through into
 # the ELSE branch after fusion (ir_fused_loop_exit_is_adjacent). Self-checking

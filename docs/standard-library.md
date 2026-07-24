@@ -22,7 +22,35 @@ Memory management. C runtime functions: `malloc`, `calloc`, `realloc`, `free`, `
 
 ## std/math
 
-Math utilities. `abs` (C runtime). `min`, `max`, `clamp` (integer operations on int64).
+Mathematics, implemented entirely in Mettle. Nothing in this module binds a C math library: the elementary functions are built from IEEE 754 bit manipulation, argument reduction, and polynomial kernels.
+
+**Bit access.** `f64_bits`, `f64_from_bits`, `f64_raw_exponent`, `ldexp`, `frexp`. `INF`, `NAN`.
+
+**Constants** (functions, because top-level `const` is restricted to integers): `PI`, `TAU`, `HALF_PI`, `QUARTER_PI`, `E`, `SQRT2`, `SQRT1_2`, `LN2`, `LN10`, `LOG2E`, `LOG10E`, `LOG10_2`, `EPSILON`, `F32_EPSILON`, `MAX_FINITE`, `MIN_POSITIVE`, `DEG_PER_RAD`, `RAD_PER_DEG`.
+
+**Classification.** `is_nan`, `is_inf`, `is_finite`, `signbit`.
+
+**Sign and magnitude.** `fabs`, `copysign`, `fsign`, `fmin`, `fmax`, `fclamp`, `saturate`.
+
+**Rounding.** `floor`, `ceil`, `trunc`, `round` (halfway away from zero), `fract`, `fmod` (exact, by scaled subtraction).
+
+**Roots and powers.** `sqrt`, `rsqrt`, `cbrt`, `hypot` (overflow-safe), `pow` (exact for integer exponents by repeated squaring).
+
+**Exponential and logarithm.** `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`. `expm1` and `log1p` avoid the cancellation that `exp(x)-1` and `log(1+x)` suffer near zero.
+
+**Trigonometry.** `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, and the hyperbolics `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`.
+
+**Angles.** `degrees`, `radians`, `wrap`, `wrap_angle`, `angle_diff`.
+
+**Interpolation.** `lerp`, `inv_lerp`, `remap`, `smoothstep`, `smootherstep`.
+
+**Comparison.** `approx_eq` (combined absolute and relative tolerance), `approx_zero`.
+
+**Integers.** `abs`, `labs`, `min`, `max`, `clamp`, `isign`, `ipow`, `isqrt`, `gcd`, `lcm`, `is_pow2`, `next_pow2`, `ilog2`, `idiv_floor` and `imod_floor` (round toward negative infinity, unlike the truncating `/` and `%`).
+
+**float32 helpers.** `f32_abs`, `f32_min`, `f32_max`, `f32_clamp`, `f32_lerp`, `f32_sqrt`.
+
+Accuracy: kernels carry enough terms that truncation error sits below the rounding error, giving roughly 1 ulp across the normal range. Trigonometric argument reduction uses a two-part split of pi/2, which holds full precision to about |x| = 1e8 and degrades beyond that. `tests/test_std_math.mettle` checks the module against independently computed reference values and identity sweeps, at both optimization levels.
 
 ## std/conv
 

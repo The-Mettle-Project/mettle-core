@@ -1,4 +1,4 @@
-// Type checker: struct / enum / declaration processing.
+﻿// Type checker: struct / enum / declaration processing.
 #include "type_checker_internal.h"
 
 /* The current PTX/SPIR-V kernel ABI is intentionally explicit: kernel
@@ -179,7 +179,7 @@ Type *type_checker_build_tagged_enum_type(TypeChecker *checker,
 
   // data starts at first offset >= 4 that satisfies alignment of payload
   size_t data_align = max_payload_align < 4 ? 4 : max_payload_align;
-  // align_up(4, data_align) – tag is 4 bytes, then pad to data_align
+  // align_up(4, data_align) â€“ tag is 4 bytes, then pad to data_align
   size_t data_offset = (4 + data_align - 1) & ~(data_align - 1);
   size_t total_size = max_payload_size > 0 ? data_offset + max_payload_size
                                            : data_offset;
@@ -264,7 +264,7 @@ int type_checker_process_tagged_enum(TypeChecker *checker,
 
 // ---------------------------------------------------------------------------
 // Instantiate a generic enum template for a concrete type argument string.
-// e.g. "Option<int32>" → creates and registers Option__int32 if needed.
+// e.g. "Option<int32>" â†’ creates and registers Option__int32 if needed.
 // ---------------------------------------------------------------------------
 Type *type_checker_instantiate_generic_enum(TypeChecker *checker,
                                                     const char *generic_name,
@@ -322,7 +322,7 @@ Type *type_checker_instantiate_generic_enum(TypeChecker *checker,
   for (size_t i = 0; i < tmpl->variant_count; i++) {
     concrete_variants[i].name = tmpl->variants[i].name;
     concrete_variants[i].value = NULL;
-    // Substitute type parameter: if payload_type == type_param[0] → use arg
+    // Substitute type parameter: if payload_type == type_param[0] â†’ use arg
     const char *orig_pt = tmpl->variants[i].payload_type;
     if (orig_pt && tmpl->type_param_count > 0 &&
         strcmp(orig_pt, tmpl->type_params[0]) == 0) {
@@ -394,7 +394,7 @@ int type_checker_process_enum_declaration(TypeChecker *checker,
     return 0;
   }
 
-  // If this enum has type parameters it's a generic template — store the AST
+  // If this enum has type parameters it's a generic template â€” store the AST
   // node for later monomorphization and do not register a concrete type now.
   if (enum_decl->type_param_count > 0) {
     ASTNode **new_tmpl = realloc(
@@ -408,7 +408,7 @@ int type_checker_process_enum_declaration(TypeChecker *checker,
     return 1;
   }
 
-  // Check whether any variant carries a payload — if so, it's a tagged enum.
+  // Check whether any variant carries a payload â€” if so, it's a tagged enum.
   int is_tagged = 0;
   for (size_t i = 0; i < enum_decl->variant_count; i++) {
     if (enum_decl->variants[i].payload_type) {
@@ -683,7 +683,7 @@ int type_checker_process_declaration(TypeChecker *checker,
           poisoned = 1;
         }
         // Type specified: validate assignment compatibility
-        else if (!(var_type->kind == TYPE_POINTER &&
+        else if (!(type_checker_type_accepts_null_pointer(var_type) &&
               type_checker_is_null_pointer_constant(var_decl->initializer)) &&
             !type_checker_is_assignable(checker, var_type, init_type)) {
           type_checker_report_type_mismatch_node(checker, var_decl->initializer,
@@ -1364,7 +1364,7 @@ int type_checker_process_declaration(TypeChecker *checker,
           return 0;
         }
 
-        if (!(field_type->kind == TYPE_POINTER &&
+        if (!(type_checker_type_accepts_null_pointer(field_type) &&
               type_checker_is_null_pointer_constant(assignment->value)) &&
             !type_checker_is_assignable(checker, field_type, value_type)) {
           type_checker_report_type_mismatch(checker,
@@ -1423,7 +1423,7 @@ int type_checker_process_declaration(TypeChecker *checker,
           return 0;
         }
 
-        if (!(element_type->kind == TYPE_POINTER &&
+        if (!(type_checker_type_accepts_null_pointer(element_type) &&
               type_checker_is_null_pointer_constant(assignment->value)) &&
             !type_checker_is_assignable(checker, element_type, value_type)) {
           type_checker_report_type_mismatch(
@@ -1460,7 +1460,7 @@ int type_checker_process_declaration(TypeChecker *checker,
           return 0;
         }
 
-        if (!(target_type->kind == TYPE_POINTER &&
+        if (!(type_checker_type_accepts_null_pointer(target_type) &&
               type_checker_is_null_pointer_constant(assignment->value)) &&
             !type_checker_is_assignable(checker, target_type, value_type)) {
           type_checker_report_type_mismatch(
@@ -1538,7 +1538,7 @@ int type_checker_process_declaration(TypeChecker *checker,
     }
 
     // Validate assignment compatibility
-    if (!(var_symbol->type->kind == TYPE_POINTER &&
+    if (!(type_checker_type_accepts_null_pointer(var_symbol->type) &&
           type_checker_is_null_pointer_constant(assignment->value)) &&
         !type_checker_is_assignable(checker, var_symbol->type, value_type)) {
       type_checker_report_type_mismatch(checker, assignment->value->location,

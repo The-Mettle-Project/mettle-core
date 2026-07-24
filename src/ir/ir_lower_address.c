@@ -138,6 +138,80 @@ int ir_try_emit_aggregate_symbol_memcpy(
   }
 }
 
+/* Gives an aggregate value a home that has an address.
+ *
+ * The wide-copy paths below build their source operand with
+ * ir_emit_address_of_symbol, so they need the value to be a named symbol. A
+ * call returning a struct yields a temp instead, which has no address to copy
+ * from -- so those paths declined and the caller fell back to a single
+ * word-sized store, dropping everything past the first 8 bytes. That is what
+ * corrupted `cfg.rect = ui_rect_xywh(...)`: the rect arrived as a temp, only
+ * its first word landed in the field, and controls were then created from
+ * garbage width and height.
+ *
+ * Spilling through a fresh local uses only paths already known good: symbol
+ * assignment moves a whole aggregate correctly, and the local then supplies the
+ * address the wide store needs. Returns 1 and fills `out_symbol` when a spill
+ * happened, 0 when the value was already usable or cannot be spilled. */
+static int ir_spill_aggregate_value_to_local(IRLoweringContext *context,
+                                             IRFunction *function,
+                                             const IROperand *value,
+                                             Type *dest_type,
+                                             SourceLocation location,
+                                             IROperand *out_symbol) {
+  char *name = NULL;
+  IRInstruction assign = {0};
+  int ok = 0;
+
+  if (!context || !function || !value || !dest_type || !out_symbol) {
+    return 0;
+  }
+  if (value->kind == IR_OPERAND_SYMBOL) {
+    return 0;               /* already addressable */
+  }
+  if (value->kind != IR_OPERAND_TEMP || !dest_type->name) {
+    return 0;
+  }
+
+  name = ir_new_label_name(context, "agg_ret");
+  if (!name) {
+    ir_set_error(context, "Out of memory while spilling aggregate value");
+    return 0;
+  }
+  if (!ir_emit_local_declaration(context, function, name, dest_type->name,
+                                 location)) {
+    free(name);
+    return 0;
+  }
+
+  assign.op = IR_OP_ASSIGN;
+  assign.location = location;
+  assign.dest = ir_operand_symbol(name);
+  assign.lhs = ir_clone_operand_local(value);
+  if (!assign.dest.name || assign.lhs.kind == IR_OPERAND_NONE) {
+    ir_operand_destroy(&assign.dest);
+    ir_operand_destroy(&assign.lhs);
+    free(name);
+    ir_set_error(context, "Out of memory while spilling aggregate value");
+    return 0;
+  }
+  ok = ir_emit(context, function, &assign);
+  ir_operand_destroy(&assign.dest);
+  ir_operand_destroy(&assign.lhs);
+  if (!ok) {
+    free(name);
+    return 0;
+  }
+
+  *out_symbol = ir_operand_symbol(name);
+  free(name);
+  if (!out_symbol->name) {
+    ir_set_error(context, "Out of memory while spilling aggregate value");
+    return 0;
+  }
+  return 1;
+}
+
 /* Whole-struct copy into an arbitrary lvalue address (e.g. `cfg.rect = r;`).
  *
  * Mirrors ir_try_emit_aggregate_symbol_memcpy, but the destination is an
@@ -154,9 +228,6 @@ int ir_try_emit_aggregate_address_memcpy(IRLoweringContext *context,
   if (!context || !function || !dest_addr || !value) {
     return 0;
   }
-  if (value->kind != IR_OPERAND_SYMBOL || !value->name) {
-    return 0;
-  }
   if (!dest_type || dest_type->kind != TYPE_STRUCT) {
     return 0;
   }
@@ -169,17 +240,32 @@ int ir_try_emit_aggregate_address_memcpy(IRLoweringContext *context,
   }
 
   {
+    IROperand spilled = ir_operand_none();
+    const IROperand *source = value;
     IROperand src_addr = ir_operand_none();
-    IROperand dest_copy = ir_clone_operand_local(dest_addr);
+    IROperand dest_copy = ir_operand_none();
     IRInstruction store = {0};
     int ok = 0;
 
-    if (dest_copy.kind == IR_OPERAND_NONE) {
+    /* A call result arrives as a temp, which has no address to copy from. */
+    if (ir_spill_aggregate_value_to_local(context, function, value, dest_type,
+                                          location, &spilled)) {
+      source = &spilled;
+    }
+    if (source->kind != IR_OPERAND_SYMBOL || !source->name) {
+      ir_operand_destroy(&spilled);
       return 0;
     }
-    if (!ir_emit_address_of_symbol(context, function, value->name, location,
+
+    dest_copy = ir_clone_operand_local(dest_addr);
+    if (dest_copy.kind == IR_OPERAND_NONE) {
+      ir_operand_destroy(&spilled);
+      return 0;
+    }
+    if (!ir_emit_address_of_symbol(context, function, source->name, location,
                                    &src_addr)) {
       ir_operand_destroy(&dest_copy);
+      ir_operand_destroy(&spilled);
       return 0;
     }
 
@@ -191,6 +277,7 @@ int ir_try_emit_aggregate_address_memcpy(IRLoweringContext *context,
     ok = ir_emit(context, function, &store);
     ir_operand_destroy(&dest_copy);
     ir_operand_destroy(&src_addr);
+    ir_operand_destroy(&spilled);
     return ok;
   }
 }

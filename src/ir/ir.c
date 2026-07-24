@@ -1381,6 +1381,7 @@ void ir_program_destroy(IRProgram *program) {
       free(program->module_symbols[i].name);
       free(program->module_symbols[i].link_name);
       free(program->module_symbols[i].init_string);
+      free(program->module_symbols[i].init_symbol_ref);
       free(program->module_symbols[i].param_types);
       free(program->module_symbols[i].codegen_view);
     }
@@ -1540,6 +1541,8 @@ IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
   dst->name = mettle_strdup(proto->name);
   dst->link_name = proto->link_name ? mettle_strdup(proto->link_name) : NULL;
   dst->init_string = proto->init_string ? mettle_strdup(proto->init_string) : NULL;
+  dst->init_symbol_ref =
+      proto->init_symbol_ref ? mettle_strdup(proto->init_symbol_ref) : NULL;
   dst->param_types = NULL;
   if (proto->param_count > 0 && proto->param_types) {
     dst->param_types = malloc(proto->param_count * sizeof(MtlcType *));
@@ -1547,6 +1550,7 @@ IRModuleSymbol *ir_program_add_symbol(IRProgram *program,
       free(dst->name);
       free(dst->link_name);
       free(dst->init_string);
+      free(dst->init_symbol_ref);
       return NULL;
     }
     memcpy(dst->param_types, proto->param_types,
@@ -4803,6 +4807,16 @@ int ir_program_eliminate_dead_functions(IRProgram *program) {
     free(live);
     free(worklist);
     return 1;
+  }
+
+  /* A global holding a function's address is a root even though no instruction
+   * names it: `var handler: fn(int32) -> int32 = &on_event;` lowers to a
+   * relocation against the function, and sweeping the body away would leave
+   * that relocation pointing at nothing. The traversal below only walks
+   * instructions, so seed these here. */
+  for (size_t i = 0; i < program->module_symbol_count; i++) {
+    ir_dead_fn_mark(&table, program->module_symbols[i].init_symbol_ref, live,
+                    worklist, &worklist_count);
   }
 
   /* A function is referenced when any instruction of a live function carries

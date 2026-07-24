@@ -467,6 +467,31 @@ static Token lexer_lex_number(Lexer *lexer) {
       lexer->position++;
       lexer->column++;
     }
+
+    // Scientific notation: 'e' or 'E', an optional sign, then at least one
+    // digit. The lookahead has to confirm a digit before anything is consumed,
+    // so a trailing 'e' that is not an exponent (`1.e` or an identifier butted
+    // against a number) is left for the following token.
+    if (lexer->position < lexer->length &&
+        (lexer->source[lexer->position] == 'e' ||
+         lexer->source[lexer->position] == 'E')) {
+      size_t peek = lexer->position + 1;
+      if (peek < lexer->length &&
+          (lexer->source[peek] == '+' || lexer->source[peek] == '-')) {
+        peek++;
+      }
+      if (peek < lexer->length &&
+          isdigit((unsigned char)lexer->source[peek])) {
+        size_t skip = peek - lexer->position;
+        lexer->position += skip;
+        lexer->column += skip;
+        while (lexer->position < lexer->length &&
+               isdigit((unsigned char)lexer->source[lexer->position])) {
+          lexer->position++;
+          lexer->column++;
+        }
+      }
+    }
   }
 
   size_t length = lexer->position - start;

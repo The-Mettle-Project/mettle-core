@@ -122,6 +122,12 @@ int type_checker_ast_contains_node_type(ASTNode *node,
 
 int type_checker_is_null_pointer_constant(ASTNode *expression);
 
+/* Targets that accept a null pointer constant. Function pointers are pointers
+ * too: `var f: fn(int32) -> int32 = 0;` is the same idea as a null data
+ * pointer, and is how a table of entry points is declared before it is
+ * populated at run time. */
+int type_checker_type_accepts_null_pointer(const Type *type);
+
 void type_checker_init_tracker_reset(TypeChecker *checker);
 
 int type_checker_init_tracker_ensure_var_capacity(TypeChecker *checker);

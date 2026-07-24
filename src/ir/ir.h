@@ -562,6 +562,11 @@ typedef struct {
   int init_is_float;
   long long init_bits;      /* numeric initializer (float carries bit pattern) */
   char *init_string;        /* owned; string-literal initializer bytes, or NULL */
+  /* Set when the initializer is the address of another module symbol
+   * (`var p: int32* = &g_x;`, `var f: fn() -> int32 = &handler;`). The value is
+   * not known until link time, so the backend reserves a pointer-sized slot and
+   * emits a relocation against this name rather than a constant. */
+  char *init_symbol_ref;    /* owned; referenced symbol name, or NULL */
   /* Set when the source had an initializer expression but it could not be
    * folded to a compile-time constant (or a string global's initializer wasn't
    * a string literal) -- the direct-object backend requires a constant global

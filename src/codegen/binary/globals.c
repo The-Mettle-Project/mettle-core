@@ -331,6 +331,132 @@ int code_generator_emit_binary_global_variable(CodeGenerator *generator,
         generator, link_name, sym->has_initializer ? sym->init_string : NULL);
   }
 
+  /* Aggregates: a global struct or array is just zero-filled storage of its
+   * laid-out size. There is no aggregate initializer syntax, so these always
+   * land in .bss and the only thing that matters is reserving the right number
+   * of bytes at the right alignment. Handled ahead of the scalar path, whose
+   * type check is shared with ABI decisions and must keep rejecting them. */
+  if (type->kind == MTLC_TYPE_STRUCT || type->kind == MTLC_TYPE_ARRAY) {
+    size_t aggregate_size = type->size;
+    size_t aggregate_alignment = type->alignment ? type->alignment : 8;
+    size_t aggregate_section = 0;
+    size_t aggregate_offset = 0;
+
+    if (aggregate_size == 0) {
+      code_generator_set_error(
+          generator, "Global '%s' has an incomplete aggregate type",
+          sym->name);
+      return 0;
+    }
+    if (sym->has_initializer || sym->has_unfoldable_initializer) {
+      code_generator_set_error(
+          generator,
+          "Direct object backend does not support initializers on aggregate "
+          "globals (encountered '%s'); assign the fields at run time",
+          sym->name);
+      return 0;
+    }
+
+    aggregate_section = binary_emitter_get_or_create_section(
+        emitter, ".bss", BINARY_SECTION_BSS, 0, aggregate_alignment);
+    if (aggregate_section == (size_t)-1) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to create global aggregate section");
+      return 0;
+    }
+    if (!binary_emitter_align_section(emitter, aggregate_section,
+                                      aggregate_alignment, 0)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to align global aggregate section");
+      return 0;
+    }
+    if (!binary_emitter_append_zeros(emitter, aggregate_section, aggregate_size,
+                                     &aggregate_offset)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to reserve global aggregate storage");
+      return 0;
+    }
+    if (!binary_emitter_define_symbol(emitter, link_name, BINARY_SYMBOL_GLOBAL,
+                                      aggregate_section, aggregate_offset,
+                                      aggregate_size)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to define global aggregate symbol");
+      return 0;
+    }
+    return 1;
+  }
+
+  /* `var p = &other;` -- a data pointer aliasing a global, or a function
+   * pointer naming an entry point. The value is a link-time address, so reserve
+   * a pointer-sized slot and let the linker fill it through a relocation. */
+  if (sym->init_symbol_ref && sym->init_symbol_ref[0] != '\0') {
+    size_t ref_section = 0;
+    size_t ref_offset = 0;
+    const char *target = sym->init_symbol_ref;
+    const IRModuleSymbol *referenced = NULL;
+
+    if (type->kind != MTLC_TYPE_POINTER &&
+        type->kind != MTLC_TYPE_FUNCTION_POINTER) {
+      code_generator_set_error(
+          generator,
+          "Global '%s' is initialized with an address but is not a pointer type",
+          sym->name);
+      return 0;
+    }
+
+    /* Relocate against the referenced symbol's linkage name, which may differ
+     * from its source name (an extern with an explicit link name). */
+    if (generator->ir_program) {
+      referenced = ir_program_lookup_symbol(generator->ir_program, target);
+      if (referenced && referenced->link_name && referenced->link_name[0]) {
+        target = referenced->link_name;
+      }
+    }
+
+    ref_section = binary_emitter_get_or_create_section(
+        emitter, ".data", BINARY_SECTION_DATA, 0, 8);
+    if (ref_section == (size_t)-1) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to create .data section");
+      return 0;
+    }
+    if (!binary_emitter_align_section(emitter, ref_section, 8, 0) ||
+        !binary_emitter_append_zeros(emitter, ref_section, 8, &ref_offset)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to reserve global pointer storage");
+      return 0;
+    }
+    if (!binary_emitter_add_relocation(emitter, ref_section, ref_offset,
+                                       BINARY_RELOCATION_ADDR64, target, 0)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to emit global pointer relocation");
+      return 0;
+    }
+    if (!binary_emitter_define_symbol(emitter, link_name, BINARY_SYMBOL_GLOBAL,
+                                      ref_section, ref_offset, 8)) {
+      code_generator_set_error(generator, "%s",
+                               binary_emitter_get_error(emitter)
+                                   ? binary_emitter_get_error(emitter)
+                                   : "Failed to define global pointer symbol");
+      return 0;
+    }
+    return 1;
+  }
+
   if (!code_generator_binary_resolved_type_is_supported(type, 0)) {
     code_generator_set_error(
         generator,
